@@ -212,7 +212,7 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         double frameSec = (double)hop / sr;
         int head = DiffSingerFrames.HeadFrames;
 
-        var speakerSet = SpeakerSet.Compute(resolved);
+        var speakerSet = SpeakerSet.Compute(resolved, pc.CompatibleVoices);
         string partLang = snapshot.PartProperties.GetString(KeyLanguage, DefaultLanguageId(config, resolved));
         // 合成用说话人（嵌入解析）= 当前 voice 在该包的 dsconfig 后缀（单说话人模型为空串、模型无 spk_embed 时不喂）。
         string speaker = !string.IsNullOrEmpty(resolved.VoiceSpeaker)
@@ -249,6 +249,25 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
             if (snapshot.Automations.TryGetValue(key, out var mixAuto))
                 mixTracks.Add((suffix, mixAuto.Evaluator.Evaluate(frameTimes)));
         var speakerMix = DiffSingerSpeakerMix.Create(Suffix(speaker), mixTracks, nFrames);
+
+        // 跨模型外部说话人嵌入：若当前包有同模型（非声码器 ONNX 相同）的其它包 voice，构建懒读取器。
+        //   三域各组合一个解析器闭包：外部 voiceId key → 外部 emb；原生 suffix key → 原生解析器。
+        ExternalEmbSet? externalEmbs = null;
+        if (pc.CompatibleVoices.Count > 0)
+            externalEmbs = new ExternalEmbSet(hidden, pc.CompatibleVoices);
+
+        // 组合解析器闭包：外部 voiceId → ext emb；原生 suffix → 原生解析器。
+        Func<string, float[]>? pitchResolver = null;
+        Func<string, float[]>? varianceResolver = null;
+        if (externalEmbs != null)
+        {
+            var pitchPred = models.GetPredictor("dspitch");
+            var varPred = models.GetPredictor("dsvariance");
+            pitchResolver = key =>
+                externalEmbs.TryPitch(key, out var pe) ? pe : (pitchPred?.GetEmbedding(key) ?? new float[hidden]);
+            varianceResolver = key =>
+                externalEmbs.TryVariance(key, out var ve) ? ve : (varPred?.GetEmbedding(key) ?? new float[hidden]);
+        }
 
         // pitch / variance 的 seed 自动化轨 → 逐帧 seed：归一化 [0,1] 放大到 uint32（哈希白化，刻度不影响质量）。
         //   平线 = 全局 take；画区段 = 该区独立 take（时间维 × 值维）。无轨/未画/NaN → 0（= 保留 take-0）。
@@ -355,7 +374,8 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         //   用户已画处（Pitch 非 NaN）用户值覆盖；NaN 自由区用预测轮廓（无 dspitch ⇒ 仍用矩形 framePitch）；PITD/vibrato 叠加在上。
         var predictedPitch = DiffSingerPitch.Predict(
             models.GetPredictor("dspitch"), phones, notes, durations,
-            renderStart, frameSec, speakerMix, config, mSamplingSteps, seedPitchCurve, mTensorCache, exprCurve, blendRows);
+            renderStart, frameSec, speakerMix, config, mSamplingSteps, seedPitchCurve, mTensorCache, exprCurve, blendRows,
+            resolveEmb: pitchResolver);
         progress?.Report(0.28);
         if (cancellation.IsCancellationRequested)
             return null;
@@ -398,7 +418,8 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         // —— variance 预测（基线；下方与用户 delta 合成喂声学、同一份实参产回显）——
         var varCurves = DiffSingerVariance.Predict(
             models.GetPredictor("dsvariance"), phones,
-            durations, varSemis, speakerMix, config, mSamplingSteps, seedVarianceCurve, mTensorCache, blendRows);
+            durations, varSemis, speakerMix, config, mSamplingSteps, seedVarianceCurve, mTensorCache, blendRows,
+            resolveEmb: varianceResolver);
         progress?.Report(0.45);
         if (cancellation.IsCancellationRequested)
             return null;
@@ -452,7 +473,10 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
 
         if (ac.HasInput("spk_embed"))
         {
-            var spk = speakerMix.ToEmbedding(models.GetSpeakerEmbeddingBySuffix, hidden);
+            Func<string, float[]> acousticResolver = externalEmbs != null
+                ? key => externalEmbs.TryAcoustic(key, out var ae) ? ae : models.GetSpeakerEmbeddingBySuffix(key)
+                : models.GetSpeakerEmbeddingBySuffix;
+            var spk = speakerMix.ToEmbedding(acousticResolver, hidden);
             cond.Add(NamedOnnxValue.CreateFromTensor("spk_embed", new DenseTensor<float>(spk, new[] { 1, nFrames, hidden })));
         }
         if (config.UseContinuousAcceleration)
@@ -891,7 +915,7 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         var desired = new HashSet<string>(StringComparer.Ordinal);
         foreach (var key in BuildFixedAutomationConfigs(pc.Config, RetakeOf(pc.Resolved)).Keys)
             desired.Add(key.Id);
-        foreach (var (key, _) in MixTrackKeys(pc.Resolved))
+        foreach (var (key, _) in MixTrackKeys(pc.Resolved, pc.CompatibleVoices))
             desired.Add(key);
         // 音素混合曲线 phoneme_mix:1..MaxMixSlots：全量列入候选，下方按 live（宿主实际声明的 N 条）过滤订阅。
         for (int k = 1; k <= MaxMixSlots; k++)

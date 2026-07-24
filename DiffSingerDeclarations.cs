@@ -99,7 +99,7 @@ public static class DiffSingerDeclarations
     public static OrderedMap<PropertyKey, AutomationConfig> BuildAutomationConfigs(PartContext pc, PropertyObject partProperties)
     {
         var map = BuildFixedAutomationConfigs(pc.Config, RetakeOf(pc.Resolved));
-        var set = SpeakerSet.Compute(pc.Resolved);
+        var set = SpeakerSet.Compute(pc.Resolved, pc.CompatibleVoices);
         foreach (var (suffix, display, color) in SelectedMixTracks(set, partProperties))
             map.Add((KeyMixPrefix + suffix, display), Continuous(color, 0, 0, 1));   // 混合权重归一化 [0,1]（0=不混入）
         // 音素混合比例包络：按槽数 N 生成 phoneme_mix:1..N（逐帧 [0,1]、基线 0）。仅能力声库暴露；目标音素在 per-phoneme 面板设。
@@ -141,20 +141,32 @@ public static class DiffSingerDeclarations
 
     // 已启用混合的说话人 (suffix, 显示名, 稳定配色)：遍历说话人集合，排除默认 speaker，
     //   过滤出 part 属性 speaker_mix 容器里已存在的键。配色按固定索引轮转（manifest voice 自带 color 则优先）。
+    //   还包含「孤儿」条目：持久化键不在当前候选集中（外部音源未安装/不兼容）→ 灰显、标记 ⚠。
     public static IEnumerable<(string Suffix, string Display, string Color)> SelectedMixTracks(SpeakerSet set, PropertyObject partProperties)
     {
         var selected = partProperties.GetObject(KeyMix);
-        int i = 0;
+        var candidateKeys = new HashSet<string>(StringComparer.Ordinal);
+        int colorIdx = 0;
         foreach (var opt in set.Options)
         {
-            string color = opt.Color ?? MixColors[i % MixColors.Length];
-            i++;
             if (opt.Suffix == set.DefaultSuffix)
                 continue;
+            candidateKeys.Add(opt.Suffix);
+            string color = opt.Color ?? MixColors[colorIdx % MixColors.Length];
+            colorIdx++;
             if (selected.Map.ContainsKey(opt.Suffix))
                 yield return (opt.Suffix, opt.Display, color);
         }
+        // 孤儿：已持久化但当前非候选（外部音源缺失/不兼容）→ 灰显 + ⚠ 标记，保留曲线数据。
+        foreach (var key in selected.Map.Keys)
+        {
+            if (candidateKeys.Contains(key))
+                continue;
+            yield return (key, "⚠ " + key, GreyColor);
+        }
     }
+
+    const string GreyColor = "#9E9E9E";
 
     // 只读回显轨：仅当声学接受该量为输入且方差器能产基线时——显示实参（预测 + 用户 delta 合成后）。
     public static OrderedMap<PropertyKey, AutomationConfig> BuildReadbackConfigs(VoicebankConfig config)
@@ -193,7 +205,7 @@ public static class DiffSingerDeclarations
             properties.Add((KeyLanguage, L.Tr("Language")), LanguageCombo(EffectiveLanguages(pc), DefaultLanguageId(pc.Config, pc.Resolved)));
 
         // 说话人混合容器：候选 = 同包暴露 voice 中除当前 voice 外的（legacy 即旧 speaker 下拉里的其他人）。
-        var set = SpeakerSet.Compute(pc.Resolved);
+        var set = SpeakerSet.Compute(pc.Resolved, pc.CompatibleVoices);
         if (set.Options.Any(o => o.Suffix != set.DefaultSuffix))
             properties.Add((KeyMix, L.Tr("Speaker mix")), BuildSpeakerMixConfig(set, mergedProps));
 
@@ -211,13 +223,26 @@ public static class DiffSingerDeclarations
         var selected = partProperties.GetObject(KeyMix);
         var props = new OrderedMap<PropertyKey, IControllerConfig>();
         var addable = new List<AddableKey>();
+        var candidateKeys = new HashSet<string>(StringComparer.Ordinal);
+        int colorIdx = 0;
         foreach (var opt in set.Options)
         {
             if (opt.Suffix == set.DefaultSuffix)
                 continue;
+            candidateKeys.Add(opt.Suffix);
+            string color = opt.Color ?? MixColors[colorIdx % MixColors.Length];
+            colorIdx++;
+            string display = (opt.IsExternal ? "[EXT] " : "") + opt.Display;
             if (selected.Map.ContainsKey(opt.Suffix))
-                props.Add((opt.Suffix, opt.Display), EmptyEntry());
-            addable.Add(new AddableKey((opt.Suffix, opt.Display), EmptyEntry()));
+                props.Add((opt.Suffix, display), EmptyEntry());
+            addable.Add(new AddableKey((opt.Suffix, display), EmptyEntry()));
+        }
+        // 孤儿：已持久化但当前非候选 → 作为 present 条目灰显保留（宿主保留曲线数据）。
+        foreach (var key in selected.Map.Keys)
+        {
+            if (candidateKeys.Contains(key))
+                continue;
+            props.Add((key, "⚠ " + key), EmptyEntry());
         }
         return ExtensibleObjectConfig.Create(props, addable);
     }
@@ -371,8 +396,9 @@ public static class DiffSingerDeclarations
             yield return (KeyMixPrefix + opt.Suffix, opt.Suffix);
     }
 
-    // 全部候选 mix 轨 key（从解析包的 ExposedVoices）——供会话订阅期使用（彼时只有实时属性、无 PropertyObject 快照）。
-    public static IEnumerable<(string Key, string Suffix)> MixTrackKeys(ResolvedVoice resolved)
+    // 全部候选 mix 轨 key（从解析包的 ExposedVoices + 跨模型候选）——供会话订阅期使用（彼时只有实时属性、无 PropertyObject 快照）。
+    //   仅候选键；孤儿键（持久化但当前非候选）不在此（合成面会安全跳过）。
+    public static IEnumerable<(string Key, string Suffix)> MixTrackKeys(ResolvedVoice resolved, IReadOnlyList<ExternalVoice> compatibleVoices)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var v in resolved.ExposedVoices)
@@ -380,6 +406,11 @@ public static class DiffSingerDeclarations
             var suffix = Suffix(v.Speaker);
             if (!string.IsNullOrEmpty(suffix) && seen.Add(suffix))
                 yield return (KeyMixPrefix + suffix, suffix);
+        }
+        foreach (var ext in compatibleVoices)
+        {
+            if (!string.IsNullOrEmpty(ext.VoiceId) && seen.Add(ext.VoiceId))
+                yield return (KeyMixPrefix + ext.VoiceId, ext.VoiceId);
         }
     }
 
@@ -419,7 +450,7 @@ public sealed class SpeakerSet
         DefaultSuffix = defaultSuffix;
     }
 
-    public static SpeakerSet Compute(ResolvedVoice resolved)
+    public static SpeakerSet Compute(ResolvedVoice resolved, IReadOnlyList<ExternalVoice> compatibleVoices)
     {
         string? host = TuneLabContext.Global.Language;
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -432,8 +463,15 @@ public sealed class SpeakerSet
             var display = I18n.Resolve(string.IsNullOrWhiteSpace(v.Name) ? suffix : v.Name!, v.NameI18n, host);
             options.Add(new SpeakerOption(suffix, display, v.Color));
         }
+        // 外部候选：voiceId 作键（若与原生 suffix 碰撞则跳过，native 优先）。
+        foreach (var ext in compatibleVoices)
+        {
+            if (string.IsNullOrEmpty(ext.VoiceId) || !seen.Add(ext.VoiceId))
+                continue;
+            options.Add(new SpeakerOption(ext.VoiceId, ext.Display, ext.Color, isExternal: true, voiceId: ext.VoiceId));
+        }
         return new SpeakerSet(options, DiffSingerDeclarations.Suffix(resolved.VoiceSpeaker ?? string.Empty));
     }
 }
 
-public sealed record SpeakerOption(string Suffix, string Display, string? Color);
+public sealed record SpeakerOption(string Suffix, string Display, string? Color, bool IsExternal = false, string? VoiceId = null);

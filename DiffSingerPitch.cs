@@ -20,16 +20,19 @@ public static class DiffSingerPitch
 {
     // phones = body 音素（不含 head/tail）；phDur = padded 帧（len=phones+2，和=totalFrames）；
     // renderStart = 渲染起点秒（phones[0].StartTime - head*frameSec）。返回逐帧 MIDI 音高（len=totalFrames），无预测器返回 null。
+    // resolveEmb：说话人嵌入解析器（支持跨模型外部 voice 的键）；null = 退化为 v.GetEmbedding（单域原生）。
     public static float[]? Predict(
         DiffSingerPredictor? v, IReadOnlyList<PhonemeSpan> phones,
         IReadOnlyList<VoiceSynthesisNoteSnapshot> notes, int[] phDur,
         double renderStart, double frameSec, DiffSingerSpeakerMix mix, VoicebankConfig cfg, int steps, uint[] seedPerFrame, bool tensorCache,
-        float[]? exprCurve = null, float[][]? blendRows = null)
+        float[]? exprCurve = null, float[][]? blendRows = null,
+        Func<string, float[]>? resolveEmb = null)
     {
         if (v is null || !v.HasModel("pitch") || phones.Count == 0 || notes.Count == 0)
             return null;
 
         int hidden = v.HiddenSize;
+        Func<string, float[]> embResolver = resolveEmb ?? v.GetEmbedding;
         int nTokens = phones.Count + 2;
         int totalFrames = phDur.Sum();
         int head = DiffSingerFrames.HeadFrames, tail = DiffSingerFrames.TailFrames;
@@ -125,7 +128,7 @@ public static class DiffSingerPitch
         }
         if (model.HasInput("spk_embed"))
         {
-            var spk = mix.ToEmbedding(v.GetEmbedding, hidden);
+            var spk = mix.ToEmbedding(embResolver, hidden);
             inputs.Add(NamedOnnxValue.CreateFromTensor("spk_embed",
                 new DenseTensor<float>(spk, new[] { 1, totalFrames, hidden })));
         }
