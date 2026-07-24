@@ -170,6 +170,81 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
         return fp;
     }
 
+    // 校验缓存条目：比较文件大小与修改时间是否与当前包一致（避免重算哈希）。
+    bool IsCacheValid(FingerprintCache.FingerprintEntry entry, string rootPath)
+    {
+        var config = ConfigForRoot(rootPath);
+        var currentSizes = CollectFileSizes(rootPath, config);
+        var currentMtimes = CollectFileMtimes(rootPath, config);
+        if (entry.FileSizes.Count != currentSizes.Count || entry.FileMtimes.Count != currentMtimes.Count)
+            return false;
+        for (int i = 0; i < currentSizes.Count; i++)
+            if (entry.FileSizes[i] != currentSizes[i] || entry.FileMtimes[i] != currentMtimes[i])
+                return false;
+        return true;
+    }
+
+    // 收集指纹相关文件的大小（字节数组，与 ModelFingerprint.Compute 扫描顺序一致）。
+    List<long> CollectFileSizes(string rootPath, VoicebankConfig config)
+    {
+        var sizes = new List<long>();
+        AddFileSize(rootPath, config.AcousticFileName, sizes);
+        foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
+        {
+            var dir = Path.Combine(rootPath, subdir);
+            var cfgPath = Path.Combine(dir, "dsconfig.yaml");
+            if (!File.Exists(cfgPath)) continue;
+            var cfg = ModelFingerprint.ReadYaml(cfgPath, TuneLabContext.Global.GetLogger());
+            if (cfg is null) continue;
+            string lingFile = ModelFingerprint.GetString(cfg, "linguistic");
+            if (!string.IsNullOrEmpty(lingFile)) AddFileSize(dir, lingFile, sizes);
+            string role = PredictorRole(subdir);
+            string roleFile = ModelFingerprint.GetString(cfg, role);
+            if (!string.IsNullOrEmpty(roleFile)) AddFileSize(dir, roleFile, sizes);
+        }
+        return sizes;
+    }
+
+    // 收集指纹相关文件的修改时间（Unix 时间戳数组，与 ModelFingerprint.Compute 扫描顺序一致）。
+    List<long> CollectFileMtimes(string rootPath, VoicebankConfig config)
+    {
+        var mtimes = new List<long>();
+        AddFileMtime(rootPath, config.AcousticFileName, mtimes);
+        foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
+        {
+            var dir = Path.Combine(rootPath, subdir);
+            var cfgPath = Path.Combine(dir, "dsconfig.yaml");
+            if (!File.Exists(cfgPath)) continue;
+            var cfg = ModelFingerprint.ReadYaml(cfgPath, TuneLabContext.Global.GetLogger());
+            if (cfg is null) continue;
+            string lingFile = ModelFingerprint.GetString(cfg, "linguistic");
+            if (!string.IsNullOrEmpty(lingFile)) AddFileMtime(dir, lingFile, mtimes);
+            string role = PredictorRole(subdir);
+            string roleFile = ModelFingerprint.GetString(cfg, role);
+            if (!string.IsNullOrEmpty(roleFile)) AddFileMtime(dir, roleFile, mtimes);
+        }
+        return mtimes;
+    }
+
+    static void AddFileSize(string dir, string fileName, List<long> sizes)
+    {
+        var path = Path.Combine(dir, fileName);
+        try { sizes.Add(new FileInfo(path).Length); }
+        catch { sizes.Add(-1); }  // 文件缺失/不可读 → -1（与缓存必不匹配）
+    }
+
+    static void AddFileMtime(string dir, string fileName, List<long> mtimes)
+    {
+        var path = Path.Combine(dir, fileName);
+        try { mtimes.Add(new DateTimeOffset(File.GetLastWriteTimeUtc(path)).ToUnixTimeSeconds()); }
+        catch { mtimes.Add(-1); }  // 文件缺失/不可读 → -1（与缓存必不匹配）
+    }
+
+    static string PredictorRole(string subdir) => subdir switch
+    {
+        "dsdur" => "dur", "dspitch" => "pitch", "dsvariance" => "variance", _ => string.Empty,
+    };
+
     // 批量计算兼容候选的指纹（单次磁盘缓存读写 + 线程安全）。
     List<ExternalVoice> ComputeCompatibleVoices(string currentRoot, string currentVoiceId)
     {
@@ -226,20 +301,23 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
             }
         }
 
-        // 比较指纹（不包加锁，读 mFingerprints 是线程安全的因为 Dictionary 支持并发读）。
+        // 比较指纹（加锁访问 mFingerprints，保证线程安全）。
         var result = new List<ExternalVoice>();
         var seenVoiceIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var pkg in allPackages)
+        lock (mFingerprintLock)
         {
-            if (pkg.RootPath == currentRoot)
-                continue;
-            if (!seenVoiceIds.Add(pkg.VoiceId))
-                continue;
-            if (pkg.VoiceId == currentVoiceId)
-                continue;
+            foreach (var pkg in allPackages)
+            {
+                if (pkg.RootPath == currentRoot)
+                    continue;
+                if (!seenVoiceIds.Add(pkg.VoiceId))
+                    continue;
+                if (pkg.VoiceId == currentVoiceId)
+                    continue;
 
-            if (mFingerprints.TryGetValue(pkg.RootPath, out var pkgFp) && pkgFp == currentFp)
-                result.Add(new ExternalVoice(pkg.VoiceId, pkg.VoiceDisplay, pkg.Color, pkg.RootPath, pkg.SpeakerEntry, pkg.Version));
+                if (mFingerprints.TryGetValue(pkg.RootPath, out var pkgFp) && pkgFp == currentFp)
+                    result.Add(new ExternalVoice(pkg.VoiceId, pkg.VoiceDisplay, pkg.Color, pkg.RootPath, pkg.SpeakerEntry, pkg.Version));
+            }
         }
         return result;
     }
