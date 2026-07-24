@@ -9,7 +9,7 @@ using Xunit;
 // ModelFingerprintStub replicates ModelFingerprint's value semantics (==, Equals, GetHashCode, ToString)
 // without requiring TuneLab SDK. ModelFingerprint.Compute / FingerprintCache require SDK
 // (VoicebankConfig / ILogger) — those are exercised by integration; here we test the pure value-type semantics.
-namespace DiffSingerForTuneLab;
+namespace DiffSinger.Tests;
 
 public class ModelFingerprintStubTests
 {

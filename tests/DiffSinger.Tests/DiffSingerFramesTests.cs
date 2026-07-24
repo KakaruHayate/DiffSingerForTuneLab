@@ -134,7 +134,7 @@ public class DiffSingerFramesTests
     }
 
     [Fact]
-    public void FitDurationSum_NegativeDelta_BorrowsFromEarlier()
+    public void FitDurationSum_NegativeDelta_NoBorrowNeeded()
     {
         // sum=70, target=50, delta=-20 → 末项 40-20=20≥0, 无需向前借
         var input = new[] { 10, 20, 40 };

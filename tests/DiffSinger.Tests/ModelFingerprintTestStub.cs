@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace DiffSingerForTuneLab;
+namespace DiffSinger.Tests;
 
 // ModelFingerprint 的纯值语义测试 stub（零 SDK 依赖）。
 //   ModelFingerprint.Compute 依赖 VoicebankConfig/ILogger，此处不引入；
@@ -10,7 +10,7 @@ namespace DiffSingerForTuneLab;
 internal readonly struct ModelFingerprintStub : IEquatable<ModelFingerprintStub>
 {
     public IReadOnlyList<ulong> Hashes { get; }
-    public ModelFingerprintStub(IReadOnlyList<ulong> hashes) => Hashes = hashes;
+    public ModelFingerprintStub(IReadOnlyList<ulong>? hashes) => Hashes = hashes ?? Array.Empty<ulong>();
     public static bool operator ==(ModelFingerprintStub a, ModelFingerprintStub b)
     {
         if (a.Hashes.Count != b.Hashes.Count) return false;

@@ -75,10 +75,10 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
         "dsdur" => "dur", "dspitch" => "pitch", "dsvariance" => "variance", _ => string.Empty,
     };
 
-    public static IReadOnlyDictionary<string, object?>? ReadYaml(string path, ILogger logger)
+    public static IReadOnlyDictionary<string, object?>? ReadYaml(string path, Action<string>? warn = null)
     {
         try { return new DeserializerBuilder().Build().Deserialize<Dictionary<string, object?>>(File.ReadAllText(path)); }
-        catch (Exception ex) { logger.Warning($"DiffSinger：解析指纹用配置失败 {path}: {ex.Message}"); return null; }
+        catch (Exception ex) { warn?.Invoke($"DiffSinger：解析指纹用配置失败 {path}: {ex.Message}"); return null; }
     }
 
     public static string GetString(IReadOnlyDictionary<string, object?> map, string key)
