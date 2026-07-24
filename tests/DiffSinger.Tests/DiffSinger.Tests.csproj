@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="xunit.assert" Version="2.9.2" />
+    <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
+  </ItemGroup>
+
+  <!-- DiffSingerFrames / DiffSingerSpeakerMix 是零外部依赖的纯静态类，直接编译进测试程序集。
+       这样即使本地无 TuneLab SDK（CI 以外的环境），也能跑单元测试。 -->
+  <ItemGroup>
+    <Compile Include="..\..\DiffSingerFrames.cs" />
+    <Compile Include="..\..\DiffSingerSpeakerMix.cs" />
+  </ItemGroup>
+
+  <!-- ModelFingerprint 的纯值语义（相等性 / GetHashCode / ToString）通过 stub 测试，
+       不依赖 TuneLab SDK。Compute() / FingerprintCache 依赖 VoicebankConfig/ILogger，由集成测试覆盖。 -->
+
+</Project>

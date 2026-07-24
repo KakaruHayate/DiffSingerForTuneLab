@@ -41,30 +41,32 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
     public override string ToString() => $"Fingerprint({Hashes.Count} hashes)";
 
     // 计算一个声库包的指纹（只读 ONNX，不加载会话）。
-    public static ModelFingerprint Compute(string rootPath, VoicebankConfig config, ILogger logger)
+    // hashFn: 文件路径 → XxHash64 值（生产用 DiffSingerTensorCache.HashFile，测试可用固定值）。
+    // warn: 可选的警告回调（生产用 ILogger.Warning）。
+    public static ModelFingerprint Compute(string rootPath, VoicebankConfig config, Func<string, ulong> hashFn, Action<string>? warn = null)
     {
         var hashes = new List<ulong>();
-        AddHash(rootPath, config.AcousticFileName, hashes, logger);
+        AddHash(rootPath, config.AcousticFileName, hashes, hashFn, warn);
         foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
         {
             var dir = Path.Combine(rootPath, subdir);
             var cfgPath = Path.Combine(dir, "dsconfig.yaml");
             if (!File.Exists(cfgPath)) continue;
-            var cfg = ReadYaml(cfgPath, logger);
+            var cfg = ReadYaml(cfgPath, warn);
             if (cfg is null) continue;
             string lingFile = GetString(cfg, "linguistic");
-            if (!string.IsNullOrEmpty(lingFile)) AddHash(dir, lingFile, hashes, logger);
+            if (!string.IsNullOrEmpty(lingFile)) AddHash(dir, lingFile, hashes, hashFn, warn);
             string role = PredictorRole(subdir);
             string roleFile = GetString(cfg, role);
-            if (!string.IsNullOrEmpty(roleFile)) AddHash(dir, roleFile, hashes, logger);
+            if (!string.IsNullOrEmpty(roleFile)) AddHash(dir, roleFile, hashes, hashFn, warn);
         }
         return new ModelFingerprint(hashes);
     }
 
-    static void AddHash(string dir, string fileName, List<ulong> hashes, ILogger logger)
+    static void AddHash(string dir, string fileName, List<ulong> hashes, Func<string, ulong> hashFn, Action<string>? warn)
     {
         var path = Path.Combine(dir, fileName);
-        try { hashes.Add(DiffSingerTensorCache.HashFile(path)); }
+        try { hashes.Add(hashFn(path)); }
         catch (Exception ex) { throw new InvalidOperationException($"指纹计算失败：{path}: {ex.Message}", ex); }
     }
 
@@ -73,13 +75,13 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
         "dsdur" => "dur", "dspitch" => "pitch", "dsvariance" => "variance", _ => string.Empty,
     };
 
-    static IReadOnlyDictionary<string, object?>? ReadYaml(string path, ILogger logger)
+    public static IReadOnlyDictionary<string, object?>? ReadYaml(string path, ILogger logger)
     {
         try { return new DeserializerBuilder().Build().Deserialize<Dictionary<string, object?>>(File.ReadAllText(path)); }
         catch (Exception ex) { logger.Warning($"DiffSinger：解析指纹用配置失败 {path}: {ex.Message}"); return null; }
     }
 
-    static string GetString(IReadOnlyDictionary<string, object?> map, string key)
+    public static string GetString(IReadOnlyDictionary<string, object?> map, string key)
         => map.TryGetValue(key, out var v) && v is string s ? s : string.Empty;
 }
 
@@ -96,7 +98,7 @@ public static class FingerprintCache
         public long ts { get; set; }
     }
 
-    public static IReadOnlyDictionary<string, FingerprintEntry> Load()
+    public static IReadOnlyDictionary<string, FingerprintEntry> Load(Action<string>? warn = null)
     {
         if (!File.Exists(CachePath))
             return new Dictionary<string, FingerprintEntry>(StringComparer.OrdinalIgnoreCase);
@@ -114,12 +116,12 @@ public static class FingerprintCache
         }
         catch (Exception ex)
         {
-            TuneLabContext.Global.GetLogger().Warning($"DiffSinger：读取指纹缓存失败（将重建）: {ex.Message}");
+            warn?.Invoke($"DiffSinger：读取指纹缓存失败（将重建）: {ex.Message}");
             return new Dictionary<string, FingerprintEntry>(StringComparer.OrdinalIgnoreCase);
         }
     }
 
-    public static void Save(IReadOnlyDictionary<string, FingerprintEntry> entries)
+    public static void Save(IReadOnlyDictionary<string, FingerprintEntry> entries, Action<string>? warn = null)
     {
         try
         {
@@ -137,7 +139,7 @@ public static class FingerprintCache
         }
         catch (Exception ex)
         {
-            TuneLabContext.Global.GetLogger().Warning($"DiffSinger：写入指纹缓存失败: {ex.Message}");
+            warn?.Invoke($"DiffSinger：写入指纹缓存失败: {ex.Message}");
         }
     }
 

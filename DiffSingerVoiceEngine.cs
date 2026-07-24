@@ -144,141 +144,102 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
 
     // 指纹缓存：按 rootPath 缓存 ModelFingerprint（内存 + 磁盘）。Rescan 清内存；磁盘缓存跨会话加速。
     readonly Dictionary<string, ModelFingerprint> mFingerprints = new(StringComparer.OrdinalIgnoreCase);
+    readonly object mFingerprintLock = new();
     ModelFingerprint GetFingerprint(string rootPath)
     {
-        if (mFingerprints.TryGetValue(rootPath, out var cached))
-            return cached;
+        lock (mFingerprintLock)
+        {
+            if (mFingerprints.TryGetValue(rootPath, out var cached))
+                return cached;
+            var fp = ComputeFingerprintInner(rootPath);
+            mFingerprints[rootPath] = fp;
+            return fp;
+        }
+    }
 
-        // 尝试磁盘缓存
+    // 内层：不读内存缓存，只查磁盘缓存 + 计算（供批量调用）。
+    ModelFingerprint ComputeFingerprintInner(string rootPath)
+    {
+        // 磁盘缓存
         var diskCache = FingerprintCache.Load();
         if (diskCache.TryGetValue(rootPath, out var entry) && IsCacheValid(entry, rootPath))
-        {
-            mFingerprints[rootPath] = entry.Fingerprint;
             return entry.Fingerprint;
-        }
 
         var config = ConfigForRoot(rootPath);
-        var fp = ModelFingerprint.Compute(rootPath, config, TuneLabContext.Global.GetLogger());
-        mFingerprints[rootPath] = fp;
-
-        // 写磁盘缓存
-        try
-        {
-            var dict = FingerprintCache.Load().ToDictionary(kv => kv.Key, kv => kv.Value);
-            dict[rootPath] = new FingerprintCache.FingerprintEntry(
-                CollectFileSizes(rootPath, config),
-                CollectFileMtimes(rootPath, config),
-                fp, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
-            FingerprintCache.Save(dict);
-        }
-        catch { /* 尽力 */ }
-
+        var fp = ModelFingerprint.Compute(rootPath, config, DiffSingerTensorCache.HashFile);
         return fp;
     }
 
-    static bool IsCacheValid(FingerprintCache.FingerprintEntry entry, string rootPath)
-    {
-        // 简化：检查 entry 内记录的各文件 size/mtime 是否与磁盘一致（不全等则缓存过期）。
-        //   若无法验证（配置解析失败），保守视为有效（继续用缓存指纹）。
-        try
-        {
-            var config = VoicebankConfig.Load(rootPath, TuneLabContext.Global.GetLogger());
-            var currentSizes = CollectFileSizes(rootPath, config);
-            var currentMtimes = CollectFileMtimes(rootPath, config);
-            if (currentSizes.Count != entry.FileSizes.Count || currentMtimes.Count != entry.FileMtimes.Count)
-                return false;
-            for (int i = 0; i < currentSizes.Count; i++)
-                if (currentSizes[i] != entry.FileSizes[i] || currentMtimes[i] != entry.FileMtimes[i])
-                    return false;
-            return true;
-        }
-        catch { return true; }
-    }
-
-    static List<long> CollectFileSizes(string rootPath, VoicebankConfig config)
-    {
-        var sizes = new List<long>();
-        AddSize(rootPath, config.AcousticFileName, sizes);
-        foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
-        {
-            var dir = Path.Combine(rootPath, subdir);
-            var cfgPath = Path.Combine(dir, "dsconfig.yaml");
-            if (!File.Exists(cfgPath)) continue;
-            var cfg = ModelFingerprint.ReadYaml(cfgPath, TuneLabContext.Global.GetLogger());
-            if (cfg is null) continue;
-            string ling = ModelFingerprint.GetString(cfg, "linguistic");
-            if (!string.IsNullOrEmpty(ling)) AddSize(dir, ling, sizes);
-            string role = PredictorRole(subdir);
-            string roleFile = ModelFingerprint.GetString(cfg, role);
-            if (!string.IsNullOrEmpty(roleFile)) AddSize(dir, roleFile, sizes);
-        }
-        return sizes;
-    }
-
-    static List<long> CollectFileMtimes(string rootPath, VoicebankConfig config)
-    {
-        var mtimes = new List<long>();
-        AddMtime(rootPath, config.AcousticFileName, mtimes);
-        foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
-        {
-            var dir = Path.Combine(rootPath, subdir);
-            var cfgPath = Path.Combine(dir, "dsconfig.yaml");
-            if (!File.Exists(cfgPath)) continue;
-            var cfg = ModelFingerprint.ReadYaml(cfgPath, TuneLabContext.Global.GetLogger());
-            if (cfg is null) continue;
-            string ling = ModelFingerprint.GetString(cfg, "linguistic");
-            if (!string.IsNullOrEmpty(ling)) AddMtime(dir, ling, mtimes);
-            string role = PredictorRole(subdir);
-            string roleFile = ModelFingerprint.GetString(cfg, role);
-            if (!string.IsNullOrEmpty(roleFile)) AddMtime(dir, roleFile, mtimes);
-        }
-        return mtimes;
-    }
-
-    static void AddSize(string dir, string file, List<long> sizes)
-    {
-        try { sizes.Add(new FileInfo(Path.Combine(dir, file)).Length); }
-        catch { sizes.Add(-1); }
-    }
-    static void AddMtime(string dir, string file, List<long> mtimes)
-    {
-        try { mtimes.Add(new FileInfo(Path.Combine(dir, file)).LastWriteTimeUtc.Ticks); }
-        catch { mtimes.Add(0); }
-    }
-    static string PredictorRole(string subdir) => subdir switch
-    {
-        "dsdur" => "dur", "dspitch" => "pitch", "dsvariance" => "variance", _ => string.Empty,
-    };
-
-    // 计算当前包的跨模型混音候选：指纹相同的其它包 voices（排除当前 voice 自身）。
+    // 批量计算兼容候选的指纹（单次磁盘缓存读写 + 线程安全）。
     List<ExternalVoice> ComputeCompatibleVoices(string currentRoot, string currentVoiceId)
     {
         var currentFp = GetFingerprint(currentRoot);
         if (mRegistry is not VoiceRegistry reg)
             return [];
 
+        // 收集全部候选包（含当前包，确保其 fingerprint 在内存缓存中）。
+        var allPackages = new List<PackageInfo>();
+        foreach (var pkg in reg.EnumeratePackages())
+            allPackages.Add(pkg);
+
+        // 批量：加载磁盘缓存一次 → 计算缺失 fingerprint → 写回磁盘缓存一次。
+        Dictionary<string, ModelFingerprint>? fpMap = null;
+        lock (mFingerprintLock)
+        {
+            var diskCache = FingerprintCache.Load();
+            bool anyMiss = false;
+            var sizes = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
+            var mtimes = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var pkg in allPackages)
+            {
+                if (mFingerprints.TryGetValue(pkg.RootPath, out var fp))
+                {
+                    // 内存命中，无需操作。
+                }
+                else if (diskCache.TryGetValue(pkg.RootPath, out var entry) && IsCacheValid(entry, pkg.RootPath))
+                {
+                    mFingerprints[pkg.RootPath] = entry.Fingerprint;
+                }
+                else
+                {
+                    anyMiss = true;
+                    try
+                    {
+                        var cfg = ConfigForRoot(pkg.RootPath);
+                        var fp2 = ModelFingerprint.Compute(pkg.RootPath, cfg, DiffSingerTensorCache.HashFile);
+                        mFingerprints[pkg.RootPath] = fp2;
+                        diskCache[pkg.RootPath] = new FingerprintCache.FingerprintEntry(
+                            CollectFileSizes(pkg.RootPath, cfg),
+                            CollectFileMtimes(pkg.RootPath, cfg),
+                            fp2, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    }
+                    catch (Exception ex)
+                    {
+                        TuneLabContext.Global.GetLogger().Info($"DiffSinger：跳过不可算指纹的包 {pkg.RootPath}: {ex.Message}");
+                    }
+                }
+            }
+            if (anyMiss)
+            {
+                try { FingerprintCache.Save(diskCache); } catch { /* 尽力 */ }
+            }
+        }
+
+        // 比较指纹（不包加锁，读 mFingerprints 是线程安全的因为 Dictionary 支持并发读）。
         var result = new List<ExternalVoice>();
         var seenVoiceIds = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var pkg in reg.EnumeratePackages())
+        foreach (var pkg in allPackages)
         {
             if (pkg.RootPath == currentRoot)
-                continue;   // 排除自身包
+                continue;
             if (!seenVoiceIds.Add(pkg.VoiceId))
-                continue;   // 同一 voice 多包只取第一个兼容版
+                continue;
             if (pkg.VoiceId == currentVoiceId)
-                continue;   // 排除当前 voice 自身
+                continue;
 
-            try
-            {
-                var pkgConfig = VoicebankConfig.Load(pkg.RootPath, TuneLabContext.Global.GetLogger(), CollectVocoderRoots());
-                var pkgFp = GetFingerprint(pkg.RootPath);
-                if (pkgFp == currentFp)
-                    result.Add(new ExternalVoice(pkg.VoiceId, pkg.VoiceDisplay, pkg.Color, pkg.RootPath, pkg.SpeakerEntry, pkg.Version));
-            }
-            catch (Exception ex)
-            {
-                TuneLabContext.Global.GetLogger().Info($"DiffSinger：跳过不可算指纹的包 {pkg.RootPath}: {ex.Message}");
-            }
+            if (mFingerprints.TryGetValue(pkg.RootPath, out var pkgFp) && pkgFp == currentFp)
+                result.Add(new ExternalVoice(pkg.VoiceId, pkg.VoiceDisplay, pkg.Color, pkg.RootPath, pkg.SpeakerEntry, pkg.Version));
         }
         return result;
     }

@@ -65,7 +65,7 @@ internal sealed class ExternalEmbSet
     float[]? ReadEmb(string voiceId, string? subdir)
     {
         var ext = mVoiceEntries.FirstOrDefault(v => v.VoiceId == voiceId);
-        if (string.IsNullOrEmpty(ext.RootPath))
+        if (ext is null || string.IsNullOrEmpty(ext.RootPath))
             return null;
 
         // 先直接试 SpeakerEntry（acoustic）或 SpeakerEntry（predictor 同名惯例）。
