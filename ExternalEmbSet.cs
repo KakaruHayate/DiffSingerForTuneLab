@@ -105,8 +105,13 @@ internal sealed class ExternalEmbSet
         string direct = subdir is null
             ? Path.Combine(ext.RootPath, ext.SpeakerEntry + ".emb")
             : Path.Combine(ext.RootPath, subdir, ext.SpeakerEntry + ".emb");
-        if (File.Exists(direct))
-            return ReadEmbFile(direct, expectedHidden);
+        try
+        {
+            if (File.Exists(direct))
+                return ReadEmbFile(direct, expectedHidden);
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
 
         // predictor 子目录：按 suffix 在该子目录的 speakers 表里解析 entry（命名可能不同）。
         if (subdir is not null)
