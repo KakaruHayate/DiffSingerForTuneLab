@@ -302,6 +302,7 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
         }
 
         // 比较指纹（加锁访问 mFingerprints，保证线程安全）。
+        //   同一 voice 多包：只在指纹匹配后才标记 seen，确保不匹配的旧/新版不被跳过。
         var result = new List<ExternalVoice>();
         var seenVoiceIds = new HashSet<string>(StringComparer.Ordinal);
         lock (mFingerprintLock)
@@ -310,13 +311,14 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
             {
                 if (pkg.RootPath == currentRoot)
                     continue;
-                if (!seenVoiceIds.Add(pkg.VoiceId))
-                    continue;
                 if (pkg.VoiceId == currentVoiceId)
                     continue;
 
                 if (mFingerprints.TryGetValue(pkg.RootPath, out var pkgFp) && pkgFp == currentFp)
-                    result.Add(new ExternalVoice(pkg.VoiceId, pkg.VoiceDisplay, pkg.Color, pkg.RootPath, pkg.SpeakerEntry, pkg.Version));
+                {
+                    if (seenVoiceIds.Add(pkg.VoiceId))
+                        result.Add(new ExternalVoice(pkg.VoiceId, pkg.VoiceDisplay, pkg.Color, pkg.RootPath, pkg.SpeakerEntry, pkg.Version));
+                }
             }
         }
         return result;
@@ -408,6 +410,8 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
         var packages = VoicebankScanner.Scan(roots, logger);
         mRegistry = VoiceRegistry.Build(packages, TuneLabContext.Global.Language, logger);
         mConfigCache.Clear();   // 包集变更：弃旧声明缓存（RootPath 可能变）
+        lock (mFingerprintLock)
+            mFingerprints.Clear();  // 包集变更：弃旧指纹缓存（包已不存在的旧 entry 不再污染）
         logger.Info($"DiffSinger：在 {roots.Count} 个根目录下发现 {packages.Count} 个模型包。");
     }
 

@@ -223,6 +223,10 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         // —— Phonemizer：歌词 → 音素时间线（绝对秒、含前置辅音越界）；mixSlots 决定逐音素读几组混合目标（仅能力声库）——
         int mixSlots = HasPhonemeMix(pc) ? MixSlots(snapshot.PartProperties) : 0;
         var durPred = models.GetPredictor("dsdur");
+        var pitchPred = models.GetPredictor("dspitch");
+        var varPred = models.GetPredictor("dsvariance");
+        int pitchHidden = pitchPred?.HiddenSize ?? hidden;
+        int varianceHidden = varPred?.HiddenSize ?? hidden;
         var phones = durPred != null
             ? DiffSingerPhonemizer.Phonemize(durPred, notes, noteLang, speaker, hop, sr, mTensorCache, mixSlots)
             : FallbackPhonemes(models, notes, noteLang);   // 无 dur 预测器：每 note 一元音兜底
@@ -254,19 +258,17 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         //   三域各组合一个解析器闭包：外部 voiceId key → 外部 emb；原生 suffix key → 原生解析器。
         ExternalEmbSet? externalEmbs = null;
         if (pc.CompatibleVoices.Count > 0)
-            externalEmbs = new ExternalEmbSet(hidden, pc.CompatibleVoices);
+            externalEmbs = new ExternalEmbSet(hidden, pitchHidden, varianceHidden, pc.CompatibleVoices);
 
         // 组合解析器闭包：外部 voiceId → ext emb；原生 suffix → 原生解析器。
         Func<string, float[]>? pitchResolver = null;
         Func<string, float[]>? varianceResolver = null;
         if (externalEmbs != null)
         {
-            var pitchPred = models.GetPredictor("dspitch");
-            var varPred = models.GetPredictor("dsvariance");
             pitchResolver = key =>
-                externalEmbs.TryPitch(key, out var pe) ? pe : (pitchPred?.GetEmbedding(key) ?? new float[hidden]);
+                externalEmbs.TryPitch(key, out var pe) ? pe : (pitchPred?.GetEmbedding(key) ?? new float[pitchHidden]);
             varianceResolver = key =>
-                externalEmbs.TryVariance(key, out var ve) ? ve : (varPred?.GetEmbedding(key) ?? new float[hidden]);
+                externalEmbs.TryVariance(key, out var ve) ? ve : (varPred?.GetEmbedding(key) ?? new float[varianceHidden]);
         }
 
         // pitch / variance 的 seed 自动化轨 → 逐帧 seed：归一化 [0,1] 放大到 uint32（哈希白化，刻度不影响质量）。

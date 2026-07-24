@@ -10,56 +10,81 @@ namespace DiffSingerForTuneLab;
 //   文件缺失（罕见，兼容包一般存在）→ 零向量兜底（该域不贡献，不崩）。
 internal sealed class ExternalEmbSet
 {
-    readonly int mHidden;
+    readonly int mAcousticHidden;
+    readonly int mPitchHidden;
+    readonly int mVarianceHidden;
     readonly List<ExternalVoice> mVoiceEntries;
     readonly object mLock = new();
     readonly Dictionary<string, float[]> mAcousticCache = new(StringComparer.Ordinal);
     readonly Dictionary<string, float[]> mPitchCache = new(StringComparer.Ordinal);
     readonly Dictionary<string, float[]> mVarianceCache = new(StringComparer.Ordinal);
 
-    public ExternalEmbSet(int hidden, IReadOnlyList<ExternalVoice> voices)
+    public ExternalEmbSet(int acousticHidden, int pitchHidden, int varianceHidden, IReadOnlyList<ExternalVoice> voices)
     {
-        mHidden = hidden;
+        mAcousticHidden = acousticHidden;
+        mPitchHidden = pitchHidden;
+        mVarianceHidden = varianceHidden;
         mVoiceEntries = voices.ToList();
     }
 
-    // 声学域 emb（从 ext.root + ext.SpeakerEntry 读 .emb）。
+    // 仅当 voiceId 属于 mVoiceEntries 时才返回 true；否则返回 false 让调用方走原生解析器。
     public bool TryAcoustic(string voiceId, out float[] emb)
     {
         lock (mLock)
         {
+            if (!IsExternal(voiceId))
+            {
+                emb = Array.Empty<float>();
+                return false;
+            }
             if (mAcousticCache.TryGetValue(voiceId, out emb))
                 return true;
-            emb = ReadEmb(voiceId, subdir: null) ?? new float[mHidden];
+            emb = ReadEmb(voiceId, subdir: null) ?? new float[mAcousticHidden];
             mAcousticCache[voiceId] = emb;
             return true;
         }
     }
 
-    // pitch 域 emb（从 ext.root/dspitch/ 读，speaker entry 按 suffix 在 ext 的 predictor speakers 表解析；缺则零向量）。
     public bool TryPitch(string voiceId, out float[] emb)
     {
         lock (mLock)
         {
+            if (!IsExternal(voiceId))
+            {
+                emb = Array.Empty<float>();
+                return false;
+            }
             if (mPitchCache.TryGetValue(voiceId, out emb))
                 return true;
-            emb = ReadEmb(voiceId, "dspitch") ?? new float[mHidden];
+            emb = ReadEmb(voiceId, "dspitch") ?? new float[mPitchHidden];
             mPitchCache[voiceId] = emb;
             return true;
         }
     }
 
-    // variance 域 emb（从 ext.root/dsvariance/ 读）。
     public bool TryVariance(string voiceId, out float[] emb)
     {
         lock (mLock)
         {
+            if (!IsExternal(voiceId))
+            {
+                emb = Array.Empty<float>();
+                return false;
+            }
             if (mVarianceCache.TryGetValue(voiceId, out emb))
                 return true;
-            emb = ReadEmb(voiceId, "dsvariance") ?? new float[mHidden];
+            emb = ReadEmb(voiceId, "dsvariance") ?? new float[mVarianceHidden];
             mVarianceCache[voiceId] = emb;
             return true;
         }
+    }
+
+    bool IsExternal(string voiceId)
+    {
+        foreach (var v in mVoiceEntries)
+            if (v.VoiceId == voiceId)
+                return true;
+        return false;
     }
 
     float[]? ReadEmb(string voiceId, string? subdir)
@@ -68,12 +93,20 @@ internal sealed class ExternalEmbSet
         if (ext is null || string.IsNullOrEmpty(ext.RootPath))
             return null;
 
+        int expectedHidden = subdir switch
+        {
+            null => mAcousticHidden,
+            "dspitch" => mPitchHidden,
+            "dsvariance" => mVarianceHidden,
+            _ => mAcousticHidden,
+        };
+
         // 先直接试 SpeakerEntry（acoustic）或 SpeakerEntry（predictor 同名惯例）。
         string direct = subdir is null
             ? Path.Combine(ext.RootPath, ext.SpeakerEntry + ".emb")
             : Path.Combine(ext.RootPath, subdir, ext.SpeakerEntry + ".emb");
         if (File.Exists(direct))
-            return ReadEmbFile(direct, mHidden);
+            return ReadEmbFile(direct, expectedHidden);
 
         // predictor 子目录：按 suffix 在该子目录的 speakers 表里解析 entry（命名可能不同）。
         if (subdir is not null)
@@ -94,7 +127,7 @@ internal sealed class ExternalEmbSet
                     {
                         var alt = Path.Combine(ext.RootPath, subdir, entry + ".emb");
                         if (File.Exists(alt))
-                            return ReadEmbFile(alt, mHidden);
+                            return ReadEmbFile(alt, expectedHidden);
                     }
                 }
                 catch { /* 解析失败回退零向量 */ }

@@ -31,6 +31,10 @@
     <Compile Remove="OpenUtauFacade/**/*.cs" />
     <Content Remove="OpenUtauFacade/**" />
     <None Remove="OpenUtauFacade/**" />
+    <!-- tests/ 是独立 xUnit 项目，从插件编译中排除。 -->
+    <Compile Remove="tests/**/*.cs" />
+    <Content Remove="tests/**" />
+    <None Remove="tests/**" />
   </ItemGroup>
 
   <!-- OpenUtau.Core 门面：插件 G2P 栈的规范类型来源 + 声库自带 OpenUtau 音素器 DLL 的绑定目标。
