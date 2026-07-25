@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using YamlDotNet.Serialization;
 
 namespace DiffSingerForTuneLab;
 
@@ -19,12 +20,16 @@ internal sealed class ExternalEmbSet
     readonly Dictionary<string, float[]> mPitchCache = new(StringComparer.Ordinal);
     readonly Dictionary<string, float[]> mVarianceCache = new(StringComparer.Ordinal);
 
-    public ExternalEmbSet(int acousticHidden, int pitchHidden, int varianceHidden, IReadOnlyList<ExternalVoice> voices)
+    public ExternalEmbSet(
+        int acousticHidden, int pitchHidden, int varianceHidden,
+        IReadOnlyList<ExternalVoice> voices, IReadOnlySet<string>? excludedVoiceIds = null)
     {
         mAcousticHidden = acousticHidden;
         mPitchHidden = pitchHidden;
         mVarianceHidden = varianceHidden;
-        mVoiceEntries = voices.ToList();
+        mVoiceEntries = voices
+            .Where(voice => excludedVoiceIds is null || !excludedVoiceIds.Contains(voice.VoiceId))
+            .ToList();
     }
 
     // 仅当 voiceId 属于 mVoiceEntries 时才返回 true；否则返回 false 让调用方走原生解析器。
@@ -37,8 +42,11 @@ internal sealed class ExternalEmbSet
                 emb = Array.Empty<float>();
                 return false;
             }
-            if (mAcousticCache.TryGetValue(voiceId, out emb))
+            if (mAcousticCache.TryGetValue(voiceId, out var cached))
+            {
+                emb = cached;
                 return true;
+            }
             emb = ReadEmb(voiceId, subdir: null) ?? new float[mAcousticHidden];
             mAcousticCache[voiceId] = emb;
             return true;
@@ -54,8 +62,11 @@ internal sealed class ExternalEmbSet
                 emb = Array.Empty<float>();
                 return false;
             }
-            if (mPitchCache.TryGetValue(voiceId, out emb))
+            if (mPitchCache.TryGetValue(voiceId, out var cached))
+            {
+                emb = cached;
                 return true;
+            }
             emb = ReadEmb(voiceId, "dspitch") ?? new float[mPitchHidden];
             mPitchCache[voiceId] = emb;
             return true;
@@ -71,8 +82,11 @@ internal sealed class ExternalEmbSet
                 emb = Array.Empty<float>();
                 return false;
             }
-            if (mVarianceCache.TryGetValue(voiceId, out emb))
+            if (mVarianceCache.TryGetValue(voiceId, out var cached))
+            {
+                emb = cached;
                 return true;
+            }
             emb = ReadEmb(voiceId, "dsvariance") ?? new float[mVarianceHidden];
             mVarianceCache[voiceId] = emb;
             return true;

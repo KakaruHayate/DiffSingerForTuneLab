@@ -13,6 +13,7 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageReference Include="xunit.assert" Version="2.9.2" />
     <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
+    <PackageReference Include="YamlDotNet" Version="18.0.0" />
   </ItemGroup>
 
   <!-- DiffSingerFrames / DiffSingerSpeakerMix 是零外部依赖的纯静态类，直接编译进测试程序集。
@@ -20,6 +21,8 @@
   <ItemGroup>
     <Compile Include="..\..\DiffSingerFrames.cs" />
     <Compile Include="..\..\DiffSingerSpeakerMix.cs" />
+    <Compile Include="..\..\ExternalEmbSet.cs" />
+    <Compile Include="..\..\ModelFingerprint.cs" />
   </ItemGroup>
 
   <!-- ModelFingerprint 的纯值语义（相等性 / GetHashCode / ToString）通过 stub 测试，

@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Hashing;
 using System.Linq;
-using TuneLab.Foundation;
 using YamlDotNet.Serialization;
 
 namespace DiffSingerForTuneLab;
@@ -16,11 +15,16 @@ namespace DiffSingerForTuneLab;
 //   磁盘缓存于 UserDataRoot/Cache/fingerprints.json（key = rootPath）。
 public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
 {
+    internal const int SlotCount = 7;
+    internal const ulong MissingSlot = ulong.MaxValue;
+
     // 有序哈希数组。顺序 = [acoustic, dsdur-ling, dsdur-dur, dspitch-ling, dspitch-pitch, dsvariance-ling, dsvariance-variance]；
     //   子目录不存在 / role 字段缺失 → 该位置跳过（下一存在项前移），故不同结构的包指纹数组长度可不同（不兼容）。
-    public IReadOnlyList<ulong> Hashes { get; }
+    readonly IReadOnlyList<ulong>? mHashes;
+    public IReadOnlyList<ulong> Hashes => mHashes ?? Array.Empty<ulong>();
 
-    public ModelFingerprint(IReadOnlyList<ulong> hashes) => Hashes = hashes;
+    public ModelFingerprint(IReadOnlyList<ulong> hashes)
+        => mHashes = hashes ?? throw new ArgumentNullException(nameof(hashes));
 
     public static bool operator ==(ModelFingerprint a, ModelFingerprint b)
     {
@@ -46,24 +50,39 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
     public static ModelFingerprint Compute(string rootPath, VoicebankConfig config, Func<string, ulong> hashFn, Action<string>? warn = null)
     {
         var hashes = new List<ulong>();
-        AddHash(rootPath, config.AcousticFileName, hashes, hashFn, warn);
+        AddHash(rootPath, config.AcousticFileName, hashes, hashFn);
         foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
         {
             var dir = Path.Combine(rootPath, subdir);
             var cfgPath = Path.Combine(dir, "dsconfig.yaml");
-            if (!File.Exists(cfgPath)) continue;
+            if (!File.Exists(cfgPath))
+            {
+                hashes.Add(MissingSlot);
+                hashes.Add(MissingSlot);
+                continue;
+            }
             var cfg = ReadYaml(cfgPath, warn);
-            if (cfg is null) continue;
+            if (cfg is null)
+                throw new InvalidOperationException($"Cannot parse fingerprint config: {cfgPath}");
             string lingFile = GetString(cfg, "linguistic");
-            if (!string.IsNullOrEmpty(lingFile)) AddHash(dir, lingFile, hashes, hashFn, warn);
+            AddOptionalHash(dir, lingFile, hashes, hashFn);
             string role = PredictorRole(subdir);
             string roleFile = GetString(cfg, role);
-            if (!string.IsNullOrEmpty(roleFile)) AddHash(dir, roleFile, hashes, hashFn, warn);
+            AddOptionalHash(dir, roleFile, hashes, hashFn);
         }
         return new ModelFingerprint(hashes);
     }
 
-    static void AddHash(string dir, string fileName, List<ulong> hashes, Func<string, ulong> hashFn, Action<string>? warn)
+    static void AddOptionalHash(
+        string dir, string fileName, List<ulong> hashes, Func<string, ulong> hashFn)
+    {
+        if (string.IsNullOrEmpty(fileName))
+            hashes.Add(MissingSlot);
+        else
+            AddHash(dir, fileName, hashes, hashFn);
+    }
+
+    static void AddHash(string dir, string fileName, List<ulong> hashes, Func<string, ulong> hashFn)
     {
         var path = Path.Combine(dir, fileName);
         try { hashes.Add(hashFn(path)); }
@@ -88,17 +107,19 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
 // 磁盘缓存（fingerprints.json）：rootPath → 条目。磁盘缓存跨会话加速首次加载。
 public static class FingerprintCache
 {
+    const int CacheVersion = 2;
     public static string CachePath => Path.Combine(DiffSingerTensorCache.CacheDirectory, "fingerprints.json");
 
     sealed class EntryDto
     {
+        public int version { get; set; }
         public List<long>? sizes { get; set; }
         public List<long>? mtimes { get; set; }
         public List<ulong>? hashes { get; set; }
         public long ts { get; set; }
     }
 
-    public static IReadOnlyDictionary<string, FingerprintEntry> Load(Action<string>? warn = null)
+    public static Dictionary<string, FingerprintEntry> Load(Action<string>? warn = null)
     {
         if (!File.Exists(CachePath))
             return new Dictionary<string, FingerprintEntry>(StringComparer.OrdinalIgnoreCase);
@@ -109,7 +130,7 @@ public static class FingerprintCache
             var result = new Dictionary<string, FingerprintEntry>(StringComparer.OrdinalIgnoreCase);
             if (yaml is not null)
                 foreach (var kv in yaml)
-                    if (kv.Value?.hashes is not null)
+                    if (kv.Value is { version: CacheVersion, hashes: { Count: ModelFingerprint.SlotCount } })
                         result[kv.Key] = new FingerprintEntry(kv.Value.sizes ?? [], kv.Value.mtimes ?? [],
                             new ModelFingerprint(kv.Value.hashes), kv.Value.ts);
             return result;
@@ -130,6 +151,7 @@ public static class FingerprintCache
                 kv => kv.Key,
                 kv => new EntryDto
                 {
+                    version = CacheVersion,
                     sizes = kv.Value.FileSizes.ToList(),
                     mtimes = kv.Value.FileMtimes.ToList(),
                     hashes = kv.Value.Fingerprint.Hashes.ToList(),
