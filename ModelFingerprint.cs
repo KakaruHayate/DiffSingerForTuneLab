@@ -19,7 +19,7 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
     internal const ulong MissingSlot = ulong.MaxValue;
 
     // 有序哈希数组。顺序 = [acoustic, dsdur-ling, dsdur-dur, dspitch-ling, dspitch-pitch, dsvariance-ling, dsvariance-variance]；
-    //   子目录不存在 / role 字段缺失 → 该位置跳过（下一存在项前移），故不同结构的包指纹数组长度可不同（不兼容）。
+    //   子目录不存在 / role 字段缺失 → 对应位置写入 MissingSlot，所有指纹保持固定槽位。
     readonly IReadOnlyList<ulong>? mHashes;
     public IReadOnlyList<ulong> Hashes => mHashes ?? Array.Empty<ulong>();
 
