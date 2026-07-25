@@ -152,6 +152,7 @@ public static class DiffSingerDeclarations
     {
         var selected = partProperties.GetObject(KeyMix);
         var candidateKeys = new HashSet<string>(StringComparer.Ordinal);
+        candidateKeys.Add(set.DefaultSuffix);
         int colorIdx = 0;
         foreach (var opt in set.Options)
         {
@@ -231,14 +232,12 @@ public static class DiffSingerDeclarations
         var props = new OrderedMap<PropertyKey, IControllerConfig>();
         var addable = new List<AddableKey>();
         var candidateKeys = new HashSet<string>(StringComparer.Ordinal);
-        int colorIdx = 0;
+        candidateKeys.Add(set.DefaultSuffix);
         foreach (var opt in set.Options)
         {
             if (opt.Suffix == set.DefaultSuffix)
                 continue;
             candidateKeys.Add(opt.Suffix);
-            string color = opt.Color ?? MixColors[colorIdx % MixColors.Length];
-            colorIdx++;
             string display = (opt.IsExternal ? "[EXT] " : "") + opt.Display;
             if (selected.Map.ContainsKey(opt.Suffix))
                 props.Add((opt.Suffix, display), EmptyEntry());
@@ -400,7 +399,8 @@ public static class DiffSingerDeclarations
     public static IEnumerable<(string Key, string Suffix)> SpeakerMixTracks(SpeakerSet set)
     {
         foreach (var opt in set.Options)
-            yield return (KeyMixPrefix + opt.Suffix, opt.Suffix);
+            if (opt.Suffix != set.DefaultSuffix)
+                yield return (KeyMixPrefix + opt.Suffix, opt.Suffix);
     }
 
     // 全部候选 mix 轨 key（从解析包的 ExposedVoices + 跨模型候选）——供会话订阅期使用（彼时只有实时属性、无 PropertyObject 快照）。
@@ -408,10 +408,11 @@ public static class DiffSingerDeclarations
     public static IEnumerable<(string Key, string Suffix)> MixTrackKeys(ResolvedVoice resolved, IReadOnlyList<ExternalVoice> compatibleVoices)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
+        string defaultSuffix = Suffix(resolved.VoiceSpeaker ?? string.Empty);
         foreach (var v in resolved.ExposedVoices)
         {
             var suffix = Suffix(v.Speaker);
-            if (!string.IsNullOrEmpty(suffix) && seen.Add(suffix))
+            if (!string.IsNullOrEmpty(suffix) && suffix != defaultSuffix && seen.Add(suffix))
                 yield return (KeyMixPrefix + suffix, suffix);
         }
         foreach (var ext in compatibleVoices)

@@ -9,8 +9,8 @@ namespace DiffSingerForTuneLab;
 
 // 一个声库包的「模型身份」：全部非声码器 ONNX 文件内容哈希（XxHash64）构成的有序元组。
 //   两包指纹严格全等 ⟺ 非声码器 ONNX 逐一相同（含存在/不存在一致），即「同一模型、可互混 emb」。
-//   参与指纹：acoustic + 各存在 predictor 子目录的 linguistic + role。
-//   子目录缺失或 dsconfig 无该 role → 贡献 0 项（与另一包有该项的情况不等价 → 不兼容）。
+//   参与指纹：acoustic + 三个固定 predictor 槽位各自的 linguistic + role。
+//   子目录缺失或 dsconfig 无该 role → 对应槽位写 MissingSlot，确保不同结构不会坍缩成相同序列。
 //   声码器 **不** 参与（已有 mel_base 变换兜底；vocoder 可不同）。
 //   磁盘缓存于 UserDataRoot/Cache/fingerprints.json（key = rootPath）。
 public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
@@ -19,7 +19,7 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
     internal const ulong MissingSlot = ulong.MaxValue;
 
     // 有序哈希数组。顺序 = [acoustic, dsdur-ling, dsdur-dur, dspitch-ling, dspitch-pitch, dsvariance-ling, dsvariance-variance]；
-    //   子目录不存在 / role 字段缺失 → 对应位置写入 MissingSlot，所有指纹保持固定槽位。
+    //   子目录不存在 / role 字段缺失 → 对应位置写入 MissingSlot；有效指纹恒为 SlotCount 个固定槽位。
     readonly IReadOnlyList<ulong>? mHashes;
     public IReadOnlyList<ulong> Hashes => mHashes ?? Array.Empty<ulong>();
 
@@ -107,7 +107,7 @@ public readonly struct ModelFingerprint : IEquatable<ModelFingerprint>
 // 磁盘缓存（fingerprints.json）：rootPath → 条目。磁盘缓存跨会话加速首次加载。
 public static class FingerprintCache
 {
-    const int CacheVersion = 2;
+    const int CacheVersion = 3;
     public static string CachePath => Path.Combine(DiffSingerTensorCache.CacheDirectory, "fingerprints.json");
 
     sealed class EntryDto

@@ -173,10 +173,11 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
         return true;
     }
 
-    // 收集指纹相关文件的大小（字节数组，与 ModelFingerprint.Compute 扫描顺序一致）。
+    // 收集指纹依赖文件的大小。dsconfig 也参与校验，因为它决定实际引用哪些 ONNX。
     List<long> CollectFileSizes(string rootPath, VoicebankConfig config)
     {
         var sizes = new List<long>();
+        AddFileSize(rootPath, "dsconfig.yaml", sizes);
         AddFileSize(rootPath, config.AcousticFileName, sizes);
         foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
         {
@@ -186,8 +187,10 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
             {
                 sizes.Add(-1);
                 sizes.Add(-1);
+                sizes.Add(-1);
                 continue;
             }
+            AddFileSize(dir, "dsconfig.yaml", sizes);
             var cfg = ModelFingerprint.ReadYaml(
                 cfgPath, message => TuneLabContext.Global.GetLogger().Warning(message));
             if (cfg is null)
@@ -201,10 +204,11 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
         return sizes;
     }
 
-    // 收集指纹相关文件的修改时间（Unix 时间戳数组，与 ModelFingerprint.Compute 扫描顺序一致）。
+    // 收集指纹依赖文件的修改时间（UTC ticks）；顺序与 CollectFileSizes 完全一致。
     List<long> CollectFileMtimes(string rootPath, VoicebankConfig config)
     {
         var mtimes = new List<long>();
+        AddFileMtime(rootPath, "dsconfig.yaml", mtimes);
         AddFileMtime(rootPath, config.AcousticFileName, mtimes);
         foreach (var subdir in new[] { "dsdur", "dspitch", "dsvariance" })
         {
@@ -214,8 +218,10 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
             {
                 mtimes.Add(-1);
                 mtimes.Add(-1);
+                mtimes.Add(-1);
                 continue;
             }
+            AddFileMtime(dir, "dsconfig.yaml", mtimes);
             var cfg = ModelFingerprint.ReadYaml(
                 cfgPath, message => TuneLabContext.Global.GetLogger().Warning(message));
             if (cfg is null)
@@ -324,7 +330,7 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
                 }
                 catch (Exception ex)
                 {
-                    logger.Info($"DiffSinger：跳过不可算指纹的包 {pkg.RootPath}: {ex.Message}");
+                    logger.Warning($"DiffSinger：跳过不可算指纹的包 {pkg.RootPath}: {ex.Message}");
                 }
             }
             if (cacheChanged)

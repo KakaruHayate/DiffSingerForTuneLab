@@ -25,7 +25,6 @@
     <Compile Include="..\..\ModelFingerprint.cs" />
   </ItemGroup>
 
-  <!-- ModelFingerprint 的纯值语义（相等性 / GetHashCode / ToString）通过 stub 测试，
-       不依赖 TuneLab SDK。Compute() / FingerprintCache 依赖 VoicebankConfig/ILogger，由集成测试覆盖。 -->
+  <!-- SDK-adjacent types are supplied by narrow test stubs; ModelFingerprint itself is production code. -->
 
 </Project>

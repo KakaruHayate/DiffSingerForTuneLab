@@ -37,7 +37,7 @@ foreach ($f in 'DirectML.dll','DirectML.pdb','DirectML.Debug.dll','DirectML.Debu
 }
 
 # 从 manifest.json 取 id + version 命名产物
-$desc = Get-Content (Join-Path $source "manifest.json") -Raw | ConvertFrom-Json
+$desc = Get-Content (Join-Path $source "manifest.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $tlx = Join-Path $out ("$($desc.id)-$($desc.version).tlx")
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
