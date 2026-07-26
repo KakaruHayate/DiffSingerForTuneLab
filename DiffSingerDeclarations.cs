@@ -403,7 +403,7 @@ public static class DiffSingerDeclarations
                 yield return (KeyMixPrefix + opt.Suffix, opt.Suffix);
     }
 
-    // 全部候选 mix 轨 key（从解析包的 ExposedVoices + 跨模型候选）——供会话订阅期使用（彼时只有实时属性、无 PropertyObject 快照）。
+    // 全部候选 mix 轨 key（当前 voicebank 的 ExposedVoices + 其他同模型 voicebank 候选）——供会话订阅期使用。
     //   仅候选键；孤儿键（持久化但当前非候选）不在此（合成面会安全跳过）。
     public static IEnumerable<(string Key, string Suffix)> MixTrackKeys(ResolvedVoice resolved, IReadOnlyList<ExternalVoice> compatibleVoices)
     {

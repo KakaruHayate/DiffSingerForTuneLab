@@ -102,7 +102,7 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
     IEnumerable<PartContext> SelectedContexts(IVoiceSynthesisPartPropertyContext context)
         => context.Parts.Select(p => Resolve(p.VoiceId, p.PartProperties)).OfType<PartContext>();
 
-    // 解析：voiceId + (model/version 选择) → 物理包能力集 + 跨模型候选。未知 voice / 解析失败 → null。
+    // 解析：voiceId + (model/version 选择) → 当前 voicebank 能力集 + 其他同模型 voicebank 候选。未知 voice / 解析失败 → null。
     PartContext? Resolve(string voiceId, ResolveProps props)
     {
         if (mRegistry.Resolve(voiceId, props) is not { } resolved)

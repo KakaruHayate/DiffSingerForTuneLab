@@ -202,7 +202,7 @@ public sealed class VoiceRegistry
         return list;
     }
 
-    // —— 跨模型候选枚举（供引擎 fingerprint + CompatibleVoices 构建）——
+    // —— 跨 voicebank 同模型候选枚举（供引擎 fingerprint + CompatibleVoices 构建）——
     //   展开注册表全部 (voice, model/version) → (voiceId, display, color, rootPath, speaker, version, modelId)。
     public IEnumerable<PackageInfo> EnumeratePackages()
     {
@@ -346,7 +346,7 @@ public sealed record ResolvedVoice(
     string RootPath, TunelabManifest? Manifest, string? VoiceSpeaker,
     ManifestVoice? CurrentVoice, IReadOnlyList<ManifestVoice> ExposedVoices);
 
-// 跨模型候选：来自另一个声库包的同模型 voice（非声码器 ONNX 相同），可加入当前 voice 的说话人混合。
+// 跨 voicebank 候选：来自另一个 voicebank 的同模型 voice（非声码器 ONNX 相同），可加入当前 voice 的说话人混合。
 public sealed record ExternalVoice(
     string VoiceId, string Display, string? Color,
     string RootPath, string SpeakerEntry, int Version);
@@ -356,11 +356,11 @@ public sealed record PackageInfo(
     string VoiceId, string VoiceDisplay, string? Color,
     string RootPath, string SpeakerEntry, int Version, string ModelId);
 
-// 一个 part 的解析上下文：物理包能力集 + voice 语境 + 注册表（取 model/version 下拉选项）+ 跨模型候选。
+// 一个 part 的解析上下文：当前 voicebank 能力集 + voice 语境 + 注册表（取 model/version 下拉选项）+ 同模型外部候选。
 public sealed record PartContext(
     VoicebankConfig Config, ResolvedVoice Resolved, VoiceRegistry Registry, string VoiceId)
 {
-    // 跨模型混音候选（非声码器 ONNX 与当前包相同、来自其它已安装包的 voices）。
+    // 跨 voicebank 混音候选（非声码器 ONNX 与当前 voicebank 相同、来自其他已安装 voicebank 的 voices）。
     //   空 = 无非声码器同模型包可混（或指纹计算失败）。
     public IReadOnlyList<ExternalVoice> CompatibleVoices { get; init; } = [];
 }

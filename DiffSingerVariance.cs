@@ -31,7 +31,7 @@ public static class DiffSingerVariance
     // phones = body 音素（不含 head/tail）；phDur = padded 帧（len=phones+2）；pitchSemis = totalFrames 半音曲线。
     //   收 PhonemeSpan（含逐槽 MixSymbols）；blendRows[r] = 第 r 槽逐帧包络比例（与 acoustic 同源、已归一），
     //   帧级混合在 role 模型条件级做（每槽跑一次 linguistic 目标流 + base）。
-    // resolveEmb：说话人嵌入解析器（支持跨模型外部 voice 的键）；null = 退化为 v.GetEmbedding（单域原生）。
+    // resolveEmb：说话人嵌入解析器（支持其他同模型 voicebank 的 voice 键）；null = 退化为 v.GetEmbedding（单域原生）。
     public static VarianceCurves Predict(
         DiffSingerPredictor? v, IReadOnlyList<PhonemeSpan> phones, int[] phDur,
         float[] pitchSemis, DiffSingerSpeakerMix mix, VoicebankConfig cfg, int steps, uint[] seedPerFrame, bool tensorCache,

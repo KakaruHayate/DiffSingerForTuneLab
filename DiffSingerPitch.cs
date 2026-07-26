@@ -20,7 +20,7 @@ public static class DiffSingerPitch
 {
     // phones = body 音素（不含 head/tail）；phDur = padded 帧（len=phones+2，和=totalFrames）；
     // renderStart = 渲染起点秒（phones[0].StartTime - head*frameSec）。返回逐帧 MIDI 音高（len=totalFrames），无预测器返回 null。
-    // resolveEmb：说话人嵌入解析器（支持跨模型外部 voice 的键）；null = 退化为 v.GetEmbedding（单域原生）。
+    // resolveEmb：说话人嵌入解析器（支持其他同模型 voicebank 的 voice 键）；null = 退化为 v.GetEmbedding（单域原生）。
     public static float[]? Predict(
         DiffSingerPredictor? v, IReadOnlyList<PhonemeSpan> phones,
         IReadOnlyList<VoiceSynthesisNoteSnapshot> notes, int[] phDur,

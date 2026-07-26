@@ -264,7 +264,7 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
                 mixTracks.Add((suffix, mixAuto.Evaluator.Evaluate(frameTimes)));
         var speakerMix = DiffSingerSpeakerMix.Create(Suffix(speaker), mixTracks, nFrames);
 
-        // 跨模型外部说话人嵌入：若当前包有同模型（非声码器 ONNX 相同）的其它包 voice，构建懒读取器。
+        // 跨 voicebank 外部说话人嵌入：若其他 voicebank 承载相同模型（非声码器 ONNX 相同），构建懒读取器。
         //   三域各组合一个解析器闭包：外部 voiceId key → 外部 emb；原生 suffix key → 原生解析器。
         ExternalEmbSet? externalEmbs = null;
         if (pc.CompatibleVoices.Count > 0)

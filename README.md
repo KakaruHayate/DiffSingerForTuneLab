@@ -27,6 +27,7 @@ dotnet build
 
 ## 参考
 
+- 同模型跨 Voicebank 说话人混合：[实现逻辑与 UI 交互](docs/same-model-cross-voicebank-speaker-mix.md)
 - 人类版开发文档：`../TuneLab/docs/plugin-development.md` §5（Voice）
 - AI 事实清单：`../TuneLab/docs/plugin-development-llm.md`（Voice 段）
 - SDK 真相源：`../TuneLab/TuneLab.SDK/Voice/`

@@ -6,7 +6,7 @@ using YamlDotNet.Serialization;
 
 namespace DiffSingerForTuneLab;
 
-// 跨模型外部说话人嵌入懒读取器：voiceId → 三域 (acoustic/pitch/variance) emb 缓存。
+// 同模型跨 voicebank 的外部说话人嵌入懒读取器：voiceId → 三域 (acoustic/pitch/variance) emb 缓存。
 //   每个 external voice 的 emb 从其自身包目录读取（非当前 A 包），由 Render 据 PartContext.CompatibleVoices 构建。
 //   文件缺失（罕见，兼容包一般存在）→ 零向量兜底（该域不贡献，不崩）。
 internal sealed class ExternalEmbSet
