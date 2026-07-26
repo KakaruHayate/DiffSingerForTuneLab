@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -134,13 +135,8 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
     // 声库能力集按物理 RootPath 缓存（解析每次 commit 都调，避免重复解析 dsconfig）；config 随包不可变，扫描重建时清空
     //   （「声码器目录」设置变更 → ApplySettings → Rescan 清缓存 ⇒ pitch_controllable 判定随新目录即时重算）。
     VoicebankConfig ConfigForRoot(string rootPath)
-    {
-        if (mConfigCache.TryGetValue(rootPath, out var cached))
-            return cached;
-        var config = VoicebankConfig.Load(rootPath, TuneLabContext.Global.GetLogger(), CollectVocoderRoots());
-        mConfigCache[rootPath] = config;
-        return config;
-    }
+        => mConfigCache.GetOrAdd(rootPath,
+            path => VoicebankConfig.Load(path, TuneLabContext.Global.GetLogger(), CollectVocoderRoots()));
 
     // 指纹缓存：按 rootPath 缓存 ModelFingerprint（内存 + 磁盘）。Rescan 清内存；磁盘缓存跨会话加速。
     readonly Dictionary<string, ModelFingerprint> mFingerprints = new(StringComparer.OrdinalIgnoreCase);
@@ -306,6 +302,9 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
             var diskCache = FingerprintCache.Load(logger.Warning);
             bool cacheChanged = false;
             var seenRoots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            // 先分流：命中磁盘缓存的走 stat 校验（实测 21 个文件 ~27ms），未命中的才需全量哈希。
+            //   分两趟是为了先知道待哈希总数，好在日志里给出 n/N 进度。
+            var pending = new List<PackageInfo>();
             foreach (var pkg in packages)
             {
                 if (!seenRoots.Add(pkg.RootPath) || mFingerprints.ContainsKey(pkg.RootPath))
@@ -317,8 +316,26 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
                         mFingerprints[pkg.RootPath] = entry.Fingerprint;
                         continue;
                     }
+                    pending.Add(pkg);
+                }
+                catch (Exception ex)
+                {
+                    logger.Warning($"DiffSinger：跳过不可算指纹的包 {pkg.RootPath}: {ex.Message}");
+                }
+            }
 
+            if (pending.Count > 0)
+                logger.Info($"DiffSinger：正在为 {pending.Count} 个包建立模型指纹（首次较慢，之后走缓存）");
+            int hashedCount = 0;
+            foreach (var pkg in pending)
+            {
+                try
+                {
                     var config = ConfigForRoot(pkg.RootPath);
+                    // 全量哈希该包的非声码器 ONNX：实测 ~500MB 的包约 3s（热缓存，冷盘更慢）。首次安装或
+                    //   改扩展设置（ApplySettings→Rescan）都会走到这里，故逐包告知进度，避免卡顿无从解释。
+                    hashedCount++;
+                    logger.Info($"DiffSinger：计算模型指纹（{hashedCount}/{pending.Count}）{pkg.RootPath}");
                     var fingerprint = ModelFingerprint.Compute(
                         pkg.RootPath, config, DiffSingerTensorCache.HashFile, logger.Warning);
                     mFingerprints[pkg.RootPath] = fingerprint;
@@ -473,7 +490,10 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
 
     volatile VoiceRegistry mRegistry = VoiceRegistry.Empty;
 
-    readonly Dictionary<string, VoicebankConfig> mConfigCache = new(StringComparer.OrdinalIgnoreCase);
+    // 并发字典：Render 在 worker 线程经 mResolve → ConfigForRoot 读写此表，与数据线程的声明路径、
+    //   以及 ApplySettings→Rescan→PopulateFingerprints 并发（后者持 mFingerprintLock，但 Render 那条路径不持，
+    //   故该锁保护不到这张表）。裸 Dictionary 并发插入会在扩容期损坏桶链 → 偶发异常/死循环/键丢失。
+    readonly ConcurrentDictionary<string, VoicebankConfig> mConfigCache = new(StringComparer.OrdinalIgnoreCase);
     static readonly ObjectConfig EmptyConfig = ObjectConfig.Create(new OrderedMap<PropertyKey, IControllerConfig>());
 
     DiffSingerModelCache? mModelCache;

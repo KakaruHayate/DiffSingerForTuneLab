@@ -255,9 +255,9 @@ pitch / variance 首先读取：
 <external root>/<subdir>/<SpeakerEntry>.emb
 ```
 
-若 predictor 内部 speaker 条目与 acoustic 条目名称不同，则解析 predictor `dsconfig.yaml` 的 `speakers` 表，按 suffix 查找替代 entry。
+若该域的 speaker 条目名与 `SpeakerEntry` 不同（manifest 包的 `voices[].speaker` 存的是 dsconfig **后缀**，而 `.emb` 文件名是完整 entry），则解析该域 `dsconfig.yaml` 的 `speakers` 表，按 suffix 查找替代 entry。acoustic 域读包根的 `dsconfig.yaml`，predictor 域读各自子目录的——三域同形、同一套解析逻辑，与原生 `DiffSingerModels.GetSpeakerEmbeddingBySuffix` 的语义对齐。
 
-外部 key 已确认存在但该域 `.emb` 缺失或不可读时，返回该域 hidden size 的零向量并缓存，不会错误回退到当前 voicebank 的同名原生 speaker。
+外部 key 已确认存在但该域 `.emb` 缺失或不可读时，返回该域 hidden size 的零向量并缓存，不会错误回退到当前 voicebank 的同名原生 speaker。**此时会打一条 warning**：零向量仍按权重计入归一化分母，听感是目标音色被稀释而非缺失，静默失败难以排查。
 
 ## 8. 生命周期与并发
 

@@ -15,6 +15,7 @@ internal sealed class ExternalEmbSet
     readonly int mPitchHidden;
     readonly int mVarianceHidden;
     readonly List<ExternalVoice> mVoiceEntries;
+    readonly Action<string>? mWarn;   // 取不到 emb 时告警（生产传 ILogger.Warning；测试可省）
     readonly object mLock = new();
     readonly Dictionary<string, float[]> mAcousticCache = new(StringComparer.Ordinal);
     readonly Dictionary<string, float[]> mPitchCache = new(StringComparer.Ordinal);
@@ -22,11 +23,13 @@ internal sealed class ExternalEmbSet
 
     public ExternalEmbSet(
         int acousticHidden, int pitchHidden, int varianceHidden,
-        IReadOnlyList<ExternalVoice> voices, IReadOnlySet<string>? excludedVoiceIds = null)
+        IReadOnlyList<ExternalVoice> voices, IReadOnlySet<string>? excludedVoiceIds = null,
+        Action<string>? warn = null)
     {
         mAcousticHidden = acousticHidden;
         mPitchHidden = pitchHidden;
         mVarianceHidden = varianceHidden;
+        mWarn = warn;
         mVoiceEntries = voices
             .Where(voice => excludedVoiceIds is null || !excludedVoiceIds.Contains(voice.VoiceId))
             .ToList();
@@ -115,10 +118,12 @@ internal sealed class ExternalEmbSet
             _ => mAcousticHidden,
         };
 
-        // 先直接试 SpeakerEntry（acoustic）或 SpeakerEntry（predictor 同名惯例）。
-        string direct = subdir is null
-            ? Path.Combine(ext.RootPath, ext.SpeakerEntry + ".emb")
-            : Path.Combine(ext.RootPath, subdir, ext.SpeakerEntry + ".emb");
+        // 该域的实际目录：acoustic = 包根，predictor = 对应子目录。两者结构同形（各自一份 dsconfig.yaml + .emb），
+        //   故解析逻辑三域共用：先试 SpeakerEntry 直取，再按 suffix 经该域 speakers 表反查真实 entry。
+        string dir = subdir is null ? ext.RootPath : Path.Combine(ext.RootPath, subdir);
+
+        // 直取：SpeakerEntry 已是完整 entry 名（legacy 包即如此）时命中。
+        string direct = Path.Combine(dir, ext.SpeakerEntry + ".emb");
         try
         {
             if (File.Exists(direct))
@@ -127,32 +132,35 @@ internal sealed class ExternalEmbSet
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }
 
-        // predictor 子目录：按 suffix 在该子目录的 speakers 表里解析 entry（命名可能不同）。
-        if (subdir is not null)
+        // 表反查：SpeakerEntry 是 dsconfig 后缀（manifest 包的 voices[].speaker 语义）时，
+        //   文件名为「前缀.后缀」，直取必然落空——须按 suffix 在该域 speakers 表里找回完整 entry。
+        //   与原生 DiffSingerModels.GetSpeakerEmbeddingBySuffix 的解析语义对齐；缺了它 acoustic 域会静默返回零向量。
+        string suffix = DiffSingerDeclarations.Suffix(ext.SpeakerEntry);
+        var cfgPath = Path.Combine(dir, "dsconfig.yaml");
+        if (File.Exists(cfgPath))
         {
-            var cfgPath = Path.Combine(ext.RootPath, subdir, "dsconfig.yaml");
-            if (File.Exists(cfgPath))
+            try
             {
-                try
+                var cfg = new DeserializerBuilder().Build()
+                    .Deserialize<Dictionary<string, object?>>(File.ReadAllText(cfgPath));
+                string? entry = cfg is not null && cfg.TryGetValue("speakers", out var sp) && sp is System.Collections.IEnumerable seq && sp is not string
+                    ? seq.Cast<object?>().Select(x => x?.ToString())
+                        .FirstOrDefault(s => !string.IsNullOrEmpty(s) && DiffSingerDeclarations.Suffix(s) == suffix)
+                    : null;
+                if (entry is not null)
                 {
-                    var cfg = new DeserializerBuilder().Build()
-                        .Deserialize<Dictionary<string, object?>>(File.ReadAllText(cfgPath));
-                    string suffix = DiffSingerDeclarations.Suffix(ext.SpeakerEntry);
-                    string? entry = cfg is not null && cfg.TryGetValue("speakers", out var sp) && sp is System.Collections.IEnumerable seq && sp is not string
-                        ? seq.Cast<object?>().Select(x => x?.ToString())
-                            .FirstOrDefault(s => !string.IsNullOrEmpty(s) && DiffSingerDeclarations.Suffix(s) == suffix)
-                        : null;
-                    if (entry is not null)
-                    {
-                        var alt = Path.Combine(ext.RootPath, subdir, entry + ".emb");
-                        if (File.Exists(alt))
-                            return ReadEmbFile(alt, expectedHidden);
-                    }
+                    var alt = Path.Combine(dir, entry + ".emb");
+                    if (File.Exists(alt))
+                        return ReadEmbFile(alt, expectedHidden);
                 }
-                catch { /* 解析失败回退零向量 */ }
             }
+            catch { /* 解析失败落到下方告警 + 零向量 */ }
         }
 
+        // 走到这里 = 该 voice 确属外部候选（指纹已匹配）却取不到本域 emb。零向量会被照常按权重计入归一化分母，
+        //   听感是目标音色被稀释而非缺失——静默失败极难排查，故告警。
+        mWarn?.Invoke($"DiffSinger：外部说话人 {ext.VoiceId} 的 {subdir ?? "acoustic"} 域 .emb 未找到"
+            + $"（{dir}，entry/后缀 {ext.SpeakerEntry}），该域按零向量处理");
         return null;
     }
 

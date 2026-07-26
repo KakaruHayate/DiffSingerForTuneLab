@@ -275,7 +275,8 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
                 .ToHashSet(StringComparer.Ordinal);
             nativeSpeakerKeys.Add(Suffix(speaker));
             externalEmbs = new ExternalEmbSet(
-                hidden, pitchHidden, varianceHidden, pc.CompatibleVoices, nativeSpeakerKeys);
+                hidden, pitchHidden, varianceHidden, pc.CompatibleVoices, nativeSpeakerKeys,
+                TuneLabContext.Global.GetLogger().Warning);
         }
 
         // 组合解析器闭包：外部 voiceId → ext emb；原生 suffix → 原生解析器。
