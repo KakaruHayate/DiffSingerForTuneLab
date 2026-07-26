@@ -69,13 +69,25 @@ public static class DiffSingerDeclarations
     public const string VarianceModeDelta = "delta";       // 偏移值编辑（当前行为）
     public const string VarianceModeAbsolute = "absolute"; // 绝对值编辑（dB 分段轨）
 
+    // 声库面包装记录：将命名空间级 VarianceSpec（纯数学）与 VoicebankConfig Use/Predict 选择器组合。
+    //   所有数值元数据与 Delta/DeltaInverse 公式委托给纯数学规格，此处仅追加 SDK 依赖的 Use/Predict。
+    //   转发属性（Key, Display, Color, EditMin/Max, Neutral, AcousticMin/Max, Delta, DeltaInverse）保持调用方兼容。
     public readonly record struct VarianceSpec(
-        string Key, string Display, string Color,
-        Func<VoicebankConfig, bool> Use, Func<VoicebankConfig, bool> Predict,
-        double EditMin, double EditMax, double Neutral,
-        double AcousticMin, double AcousticMax,
-        Func<float, float, float> Delta,
-        Func<float, float, float>? DeltaInverse = null);   // 逆函数：target → 等效 delta 系数（绝对值模式用）
+        global::DiffSingerForTuneLab.VarianceSpec Math,
+        Func<VoicebankConfig, bool> Use,
+        Func<VoicebankConfig, bool> Predict)
+    {
+        public string Key => Math.Key;
+        public string Display => Math.Display;
+        public string Color => Math.Color;
+        public double EditMin => Math.EditMin;
+        public double EditMax => Math.EditMax;
+        public double Neutral => Math.Neutral;
+        public double AcousticMin => Math.AcousticMin;
+        public double AcousticMax => Math.AcousticMax;
+        public Func<float, float, float> Delta => Math.Delta;
+        public Func<float, float, float>? DeltaInverse => Math.DeltaInverse;
+    }
 
     // 编辑轨（delta 语义）归一化到小数：energy/breath/tension 中性 0、量程 [-1,1]；voicing 中性 1、量程 [0,1.25]。
     //   Delta(x=预测声学值, y=用户归一化值) 系数随之 ×100：y=1 等价旧 y=100（energy/breath ±12dB、tension ±5）。
@@ -91,40 +103,11 @@ public static class DiffSingerDeclarations
     //   energy/breathiness/tension 为线性函数，解析求逆；voicing 下行非线性，用二分法数值求逆（域 [0,1] 单调，40 次迭代精度 >> 需求）。
     public static readonly VarianceSpec[] Variances =
     {
-        new("energy",      "Energy",      "#E573A5", c => c.UseEnergyEmbed,      c => c.PredictEnergy,      -1, 1, 0, -96, 0,
-            (x, y) => x + y * 12,      (x, t) => (t - x) / 12f),
-        new("breathiness", "Breathiness", "#73E5C2", c => c.UseBreathinessEmbed, c => c.PredictBreathiness, -1, 1, 0, -96, 0,
-            (x, y) => x + y * 12,      (x, t) => (t - x) / 12f),
-        new("voicing",     "Voicing",     "#C2E573", c => c.UseVoicingEmbed,     c => c.PredictVoicing,      0, 1.25, 1, -96, 0,
-            (x, y) => y > 1 ? x + 48 * (y - 1)
-                            : x - 48 * (1 - y) / (2 - y) - (x + 72) * MathF.Pow(1 - y, 12),
-            InvertVoicing),
-        new("tension",     "Tension",     "#A573E5", c => c.UseTensionEmbed,     c => c.PredictTension,     -1, 1, 0, -10, 10,
-            (x, y) => x + y * 5,       (x, t) => (t - x) / 5f),
+        new(VarianceMath.Variances[0], c => c.UseEnergyEmbed,      c => c.PredictEnergy),
+        new(VarianceMath.Variances[1], c => c.UseBreathinessEmbed, c => c.PredictBreathiness),
+        new(VarianceMath.Variances[2], c => c.UseVoicingEmbed,     c => c.PredictVoicing),
+        new(VarianceMath.Variances[3], c => c.UseTensionEmbed,     c => c.PredictTension),
     };
-
-    // Voicing delta 下行逆函数（数值二分，域 [0,1] 单调递减）：
-    //   target = x − 48·(1−y)/(2−y) − (x+72)·(1−y)^12
-    //   上行 y>1 线性可直接解：y = 1 + (target − x) / 48
-    static float InvertVoicing(float x, float target)
-    {
-        // 上行线性分支
-        float yUp = 1f + (target - x) / 48f;
-        if (yUp > 1f) return Math.Clamp(yUp, 1f, 1.25f);
-        // 下行二分 [0, 1]（40 次 ≈ 2^-40 ≈ 9e-13 精度，远高于 dB 精度需求）
-        float lo = 0f, hi = 1f;
-        for (int i = 0; i < 40; i++)
-        {
-            float mid = (lo + hi) * 0.5f;
-            float v = VoicingDeltaDown(x, mid);
-            if (v > target) lo = mid; else hi = mid;   // 单调递减：target 大 ⇒ y 小
-        }
-        return (lo + hi) * 0.5f;
-    }
-
-    // Voicing delta 下行（y ≤ 1）纯函数（供 InvertVoicing 复用，避免在内联 lambda 里重复复杂公式）
-    static float VoicingDeltaDown(float x, float y)
-        => x - 48f * (1f - y) / (2f - y) - (x + 72f) * MathF.Pow(1f - y, 12f);
 
     // manifest retake 三位（legacy → 全 false ⇒ 不暴露任何 seed 轨）。
     public static (bool Acoustic, bool Pitch, bool Variance) RetakeOf(ResolvedVoice resolved)
@@ -479,7 +462,7 @@ public static class DiffSingerDeclarations
             .WithMinLabel($"{v.AcousticMin:0} dB").WithMaxLabel($"{v.AcousticMax:0} dB");
 
     // part 属性 variance_param_mode → 当前模式（缺省 delta）
-    static string VarianceModeOf(PropertyObject partProperties)
+    public static string VarianceModeOf(PropertyObject partProperties)
         => partProperties.GetString(KeyVarianceMode, VarianceModeDelta);
 }
 

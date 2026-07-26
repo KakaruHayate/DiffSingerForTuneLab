@@ -49,6 +49,7 @@ internal static class L
             ["Variance param mode"] = "参数模式",
             ["Variance param mode (delta)"] = "偏移值",
             ["Variance param mode (absolute)"] = "绝对值",
+            ["Absolute"] = "绝对值",
             ["Synthesizing"] = "合成中",
         },
     };

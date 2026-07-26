@@ -462,6 +462,6 @@ variance 参数（energy / breathiness / voicing / tension）有两种编辑模�
 - 切回 delta 时，absolute 分段轨数据保留在 `PiecewiseAutomations` 容器中（孤儿数据），delta 连续轨恢复为切换前的原样。
 - 这与 ACE Studio 的「包络/实参」选项卡单向数据流一致：delta → absolute 显示跟随（已有 readback 机制），absolute → delta 不反向传播。
 
-**Voicing DeltaInverse**：absolute 模式下需要把用户画的 dB 目标值反推为等效 delta 系数。voicing 的 delta 函数下行是非线性（含 `(1-y)^12` 幂项），无解析逆函数，采用 40 次二分法数值求逆（域 `[0,1]` 单调递减，精度 ~2^-40 >> dB 精度需求）。上行 `y>1` 是线性分支，可直接解析求解。
+**Voicing DeltaInverse**：absolute 模式下需要把用户画的 dB 目标值反推为等效 delta 系数。voicing 的 delta 函数下行是非线性（含 `(1-y)^12` 幂项），无解析逆函数，采用 40 次二分法数值求逆（域 `[0,1]` 上 `y` 增则输出增，单调递增：`y=0` → `-96` dB、`y=1` → 预测值；精度 ~2^-40 >> dB 精度需求）。上行 `y>1` 是线性分支，可直接解析求解，并按编辑量程上限钳到 `1.25`（即 `predicted + 12` dB 以上的目标不可达）。
 
 **回显轨裁剪**：absolute 模式下用户轨本身就是实参（已含预测 + 编辑），`SynthesizedParameters` 对该参数不再暴露只读回显轨（避免两条轨同值重复）。

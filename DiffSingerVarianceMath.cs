@@ -31,7 +31,12 @@ public static class VarianceMath
             (x, y) => x + y * 5,       (x, t) => (t - x) / 5f),
     };
 
-    // Voicing delta 下行逆函数（数值二分，域 [0,1] 单调递减）。
+    // Voicing delta 下行逆函数（数值二分求 y ∈ [0,1]）。
+    //   下行 Delta(x, ·) 在 [0,1] 上随 y 递增：y=0 → −96 dB（静音底）、y=1 → 预测值 x。
+    //   故二分条件是 f(mid) < target 时抬下界；写反会收敛到区间另一端、令输出与用户所画曲线上下颠倒
+    //   （见 VarianceInverseTests.Voicing_DownwardBranch_IsMonotonicIncreasing 回归）。
+    //   注：x < −72 时公式在 y≈0.05~0.24 附近会下探到 −96 以下（幂项系数 x+72 变号），非严格单调；
+    //   但整段下探都在声学量程外，调用方的 [-96,0] clamp 已将其压平，可达目标的求逆精度不受影响。
     public static float InvertVoicing(float x, float target)
     {
         float yUp = 1f + (target - x) / 48f;
@@ -40,7 +45,7 @@ public static class VarianceMath
         for (int i = 0; i < 40; i++)
         {
             float mid = (lo + hi) * 0.5f;
-            if (VoicingDeltaDown(x, mid) > target) lo = mid; else hi = mid;
+            if (VoicingDeltaDown(x, mid) < target) lo = mid; else hi = mid;
         }
         return (lo + hi) * 0.5f;
     }
