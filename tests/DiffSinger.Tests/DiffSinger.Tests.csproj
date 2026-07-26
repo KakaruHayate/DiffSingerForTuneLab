@@ -14,10 +14,11 @@
     <PackageReference Include="xunit.assert" Version="2.9.2" />
   </ItemGroup>
 
-  <!-- DiffSingerFrames 是零外部依赖的纯静态工具类，直接编译进测试程序集。
-       这样即使本地无 TuneLab SDK（CI 以外的环境），也能跑单元测试。 -->
+  <!-- 单元测试零 SDK 依赖：DiffSingerFrames（帧时长工具）+ DiffSingerVarianceMath（Delta/DeltaInverse 纯数学）。
+       CI 中无需 checkout TuneLab SDK 即可编译运行单测。 -->
   <ItemGroup>
     <Compile Include="..\..\DiffSingerFrames.cs" />
+    <Compile Include="..\..\DiffSingerVarianceMath.cs" />
   </ItemGroup>
 
 </Project>

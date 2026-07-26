@@ -24,6 +24,7 @@ public static class DiffSingerDeclarations
     public const string KeyMouthOpening = "shift_mouth_opening";  // SHMC alpha：键取偏移语义，给将来绝对口型轨留 "mouth_opening"
     public const string KeyExpressiveness = "expressiveness";   // pitch 表现力（PEXP）：仅 dspitch use_expr 时暴露
     public const string KeyToneShift = "tone_shift";            // 音区偏移（SHFC）：仅 pitch_controllable 声码器时暴露
+    public const string KeyVarianceMode = "variance_param_mode"; // part 属性：variance 参数模式（delta=偏移 / absolute=绝对值）
     public const string KeySpeaker = "speaker";    // legacy：part 默认说话人下拉
     public const string KeyLanguage = "language";
     public const string KeyModel = "model";        // manifest：模型下拉（part 属性）
@@ -64,12 +65,17 @@ public static class DiffSingerDeclarations
     //   听感音高不变（声码器吃原始 f0）、声学按偏移后的 f0 取音色——「用另一个音区的嗓子唱这个音」。
     public const double ToneShiftBaseline = 0, ToneShiftMin = -12, ToneShiftMax = 12;
 
+    // variance 参数模式
+    public const string VarianceModeDelta = "delta";       // 偏移值编辑（当前行为）
+    public const string VarianceModeAbsolute = "absolute"; // 绝对值编辑（dB 分段轨）
+
     public readonly record struct VarianceSpec(
         string Key, string Display, string Color,
         Func<VoicebankConfig, bool> Use, Func<VoicebankConfig, bool> Predict,
         double EditMin, double EditMax, double Neutral,
         double AcousticMin, double AcousticMax,
-        Func<float, float, float> Delta);
+        Func<float, float, float> Delta,
+        Func<float, float, float>? DeltaInverse = null);   // 逆函数：target → 等效 delta 系数（绝对值模式用）
 
     // 编辑轨（delta 语义）归一化到小数：energy/breath/tension 中性 0、量程 [-1,1]；voicing 中性 1、量程 [0,1.25]。
     //   Delta(x=预测声学值, y=用户归一化值) 系数随之 ×100：y=1 等价旧 y=100（energy/breath ±12dB、tension ±5）。
@@ -81,15 +87,44 @@ public static class DiffSingerDeclarations
     //     上行（y>1）线性 +48(y−1)：满偏 1.25 = +12dB（与 energy 正向满偏对齐、避开 0dBFS 过载区）；
     //       中性线两侧斜率相等（48）、过线无顿挫（仅二阶导跳变）。
     //     预测 < −72dB 的帧（本就近静音）下行中段轻微下越 −96，由合成期 clamp 兜住。详见 schema 文档 §14.2。
+    // DeltaInverse（绝对值模式用）：给定预测值 x 和目标绝对值 t，求等效 delta 系数 y 使 Delta(x, y) ≈ t。
+    //   energy/breathiness/tension 为线性函数，解析求逆；voicing 下行非线性，用二分法数值求逆（域 [0,1] 单调，40 次迭代精度 >> 需求）。
     public static readonly VarianceSpec[] Variances =
     {
-        new("energy",      "Energy",      "#E573A5", c => c.UseEnergyEmbed,      c => c.PredictEnergy,      -1, 1, 0, -96, 0, (x, y) => x + y * 12),
-        new("breathiness", "Breathiness", "#73E5C2", c => c.UseBreathinessEmbed, c => c.PredictBreathiness, -1, 1, 0, -96, 0, (x, y) => x + y * 12),
+        new("energy",      "Energy",      "#E573A5", c => c.UseEnergyEmbed,      c => c.PredictEnergy,      -1, 1, 0, -96, 0,
+            (x, y) => x + y * 12,      (x, t) => (t - x) / 12f),
+        new("breathiness", "Breathiness", "#73E5C2", c => c.UseBreathinessEmbed, c => c.PredictBreathiness, -1, 1, 0, -96, 0,
+            (x, y) => x + y * 12,      (x, t) => (t - x) / 12f),
         new("voicing",     "Voicing",     "#C2E573", c => c.UseVoicingEmbed,     c => c.PredictVoicing,      0, 1.25, 1, -96, 0,
             (x, y) => y > 1 ? x + 48 * (y - 1)
-                            : x - 48 * (1 - y) / (2 - y) - (x + 72) * MathF.Pow(1 - y, 12)),
-        new("tension",     "Tension",     "#A573E5", c => c.UseTensionEmbed,     c => c.PredictTension,     -1, 1, 0, -10, 10, (x, y) => x + y * 5),
+                            : x - 48 * (1 - y) / (2 - y) - (x + 72) * MathF.Pow(1 - y, 12),
+            InvertVoicing),
+        new("tension",     "Tension",     "#A573E5", c => c.UseTensionEmbed,     c => c.PredictTension,     -1, 1, 0, -10, 10,
+            (x, y) => x + y * 5,       (x, t) => (t - x) / 5f),
     };
+
+    // Voicing delta 下行逆函数（数值二分，域 [0,1] 单调递减）：
+    //   target = x − 48·(1−y)/(2−y) − (x+72)·(1−y)^12
+    //   上行 y>1 线性可直接解：y = 1 + (target − x) / 48
+    static float InvertVoicing(float x, float target)
+    {
+        // 上行线性分支
+        float yUp = 1f + (target - x) / 48f;
+        if (yUp > 1f) return Math.Clamp(yUp, 1f, 1.25f);
+        // 下行二分 [0, 1]（40 次 ≈ 2^-40 ≈ 9e-13 精度，远高于 dB 精度需求）
+        float lo = 0f, hi = 1f;
+        for (int i = 0; i < 40; i++)
+        {
+            float mid = (lo + hi) * 0.5f;
+            float v = VoicingDeltaDown(x, mid);
+            if (v > target) lo = mid; else hi = mid;   // 单调递减：target 大 ⇒ y 小
+        }
+        return (lo + hi) * 0.5f;
+    }
+
+    // Voicing delta 下行（y ≤ 1）纯函数（供 InvertVoicing 复用，避免在内联 lambda 里重复复杂公式）
+    static float VoicingDeltaDown(float x, float y)
+        => x - 48f * (1f - y) / (2f - y) - (x + 72f) * MathF.Pow(1f - y, 12f);
 
     // manifest retake 三位（legacy → 全 false ⇒ 不暴露任何 seed 轨）。
     public static (bool Acoustic, bool Pitch, bool Variance) RetakeOf(ResolvedVoice resolved)
@@ -99,9 +134,12 @@ public static class DiffSingerDeclarations
     public static bool HasPhonemeMix(PartContext pc) => pc.Resolved.Manifest?.PhonemeMix ?? false;
 
     // —— 自动化轨（可编辑曲线）= 固定轨 + 已启用的说话人混合轨 ——
+    //   absoluteMode=true 时 variance 轨为分段绝对轨（dB），否则为连续 delta 轨（归一化偏移）。
+    //   由 part 属性 variance_param_mode 驱动（"delta" | "absolute"），默认 delta。
     public static OrderedMap<PropertyKey, AutomationConfig> BuildAutomationConfigs(PartContext pc, PropertyObject partProperties)
     {
-        var map = BuildFixedAutomationConfigs(pc.Config, RetakeOf(pc.Resolved));
+        bool absoluteMode = VarianceModeOf(partProperties) == VarianceModeAbsolute;
+        var map = BuildFixedAutomationConfigs(pc.Config, RetakeOf(pc.Resolved), absoluteMode);
         var set = SpeakerSet.Compute(pc.Resolved);
         foreach (var (suffix, display, color) in SelectedMixTracks(set, partProperties))
             map.Add((KeyMixPrefix + suffix, display), Continuous(color, 0, 0, 1));   // 混合权重归一化 [0,1]（0=不混入）
@@ -113,14 +151,21 @@ public static class DiffSingerDeclarations
         return map;
     }
 
-    // 固定轨（与 part 属性无关）：variance（按声库能力）+ Gender/Speed + seed（按 retake gating）。
+    // 固定轨（与 part 属性无关）：variance（按声库能力 + 参数模式）+ Gender/Speed + seed（按 retake gating）。
+    //   absoluteMode=true 时 variance 轨切换为分段绝对轨（dB 量程，DefaultValue=NaN，未编辑=跟随预测），
+    //   否则为连续 delta 轨（归一化偏移量，DefaultValue=Neutral）。
     public static OrderedMap<PropertyKey, AutomationConfig> BuildFixedAutomationConfigs(
-        VoicebankConfig config, (bool Acoustic, bool Pitch, bool Variance) retake)
+        VoicebankConfig config, (bool Acoustic, bool Pitch, bool Variance) retake, bool absoluteMode = false)
     {
         var map = new OrderedMap<PropertyKey, AutomationConfig>();
         foreach (var v in Variances)
             if (v.Use(config))
-                map.Add((v.Key, L.Tr(v.Display)), Continuous(v.Color, v.Neutral, v.EditMin, v.EditMax));
+            {
+                AutomationConfig cfg = absoluteMode
+                    ? AbsoluteCurve(v)    // 分段绝对轨：dB 量程，未编辑 NaN = 跟随预测
+                    : Continuous(v.Color, v.Neutral, v.EditMin, v.EditMax);  // 连续 delta 轨
+                map.Add((v.Key, L.Tr(v.Display) + (absoluteMode ? " (" + L.Tr("Absolute") + ")" : "")), cfg);
+            }
 
         if (config.UseKeyShiftEmbed)
             map.Add((KeyGender, L.Tr("Gender")), Continuous("#E5A573", GenderBaseline, GenderMin, GenderMax));
@@ -163,14 +208,20 @@ public static class DiffSingerDeclarations
     }
 
     // 只读回显轨：仅当声学接受该量为输入且方差器能产基线时——显示实参（预测 + 用户 delta 合成后）。
-    public static OrderedMap<PropertyKey, AutomationConfig> BuildReadbackConfigs(VoicebankConfig config)
+    //   绝对值模式下用户轨即实参，回显轨冗余，跳过。
+    public static OrderedMap<PropertyKey, AutomationConfig> BuildReadbackConfigs(VoicebankConfig config, bool absoluteMode = false)
     {
         var map = new OrderedMap<PropertyKey, AutomationConfig>();
+        if (absoluteMode) return map;  // 绝对值模式下不暴露回显轨
         foreach (var v in Variances)
             if (v.Use(config) && v.Predict(config))
                 map.Add((v.Key, L.Tr(v.Display)), Piecewise(v.Color, v.AcousticMin, v.AcousticMax));
         return map;
     }
+
+    // 绝对值模式下读取回显轨配置时也需要传入 mode（会话构造期已知当前模式）
+    public static OrderedMap<PropertyKey, AutomationConfig> BuildReadbackConfigs(PropertyObject partProperties, VoicebankConfig config)
+        => BuildReadbackConfigs(config, VarianceModeOf(partProperties) == VarianceModeAbsolute);
 
     // part 级面板：manifest 暴露 model/version 下拉；legacy 暴露 speaker 下拉；两者皆可有混音容器 + 默认语言。
     public static ObjectConfig BuildPartConfig(PartContext pc, PropertyObject mergedProps)
@@ -207,6 +258,18 @@ public static class DiffSingerDeclarations
         if (HasPhonemeMix(pc))
             properties.Add((KeyMixSlots, L.Tr("Phoneme mix slots")),
                 DraggableNumberBoxConfig.Integer(0).WithRange(0, MaxMixSlots));
+
+        // variance 参数模式（仅声库有 variance 参数时暴露）：delta = 偏移值编辑 / absolute = 绝对值编辑（dB）。
+        if (pc.Config.UseEnergyEmbed || pc.Config.UseBreathinessEmbed || pc.Config.UseVoicingEmbed || pc.Config.UseTensionEmbed)
+        {
+            properties.Add((KeyVarianceMode, L.Tr("Variance param mode")), ComboBoxConfig
+                .Create(new List<ComboBoxItem>
+                {
+                    new(PropertyValue.Create(VarianceModeDelta), L.Tr("Variance param mode (delta)")),
+                    new(PropertyValue.Create(VarianceModeAbsolute), L.Tr("Variance param mode (absolute)")),
+                })
+                .WithDefault(PropertyValue.Create(VarianceModeDelta)));
+        }
 
         return ObjectConfig.Create(properties);
     }
@@ -409,6 +472,15 @@ public static class DiffSingerDeclarations
     // 连续轨：WithDefault 给实数基线 → 连续；按需 WithRandomizable。
     static AutomationConfig Continuous(string color, double baseline, double min, double max, bool randomizable = false)
         => AutomationConfig.Create(min, max).WithDefault(baseline).WithColor(color).WithRandomizable(randomizable);
+
+    // 绝对模式分段轨：NaN 基线（未编辑 = 跟随预测），dB 量程，带 dB 单位格式。
+    static AutomationConfig AbsoluteCurve(VarianceSpec v)
+        => Piecewise(v.Color, v.AcousticMin, v.AcousticMax)
+            .WithMinLabel($"{v.AcousticMin:0} dB").WithMaxLabel($"{v.AcousticMax:0} dB");
+
+    // part 属性 variance_param_mode → 当前模式（缺省 delta）
+    static string VarianceModeOf(PropertyObject partProperties)
+        => partProperties.GetString(KeyVarianceMode, VarianceModeDelta);
 }
 
 // 一个 part 当前的“可用说话人集合”：驱动默认说话人、混音候选/轨、嵌入解析。

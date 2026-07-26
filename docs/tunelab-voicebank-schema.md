@@ -449,3 +449,19 @@ variance 回显轨（`SynthesizedParameters`）是**实参（预测 + 用户 del
 
 - `language`：**建议**声库制作方用 ISO 639 / BCP-47 码（`zh`/`ja`/`en`）。插件作为桥**无法强制**，只能在 schema 建议 +（可选）加载时对非 ISO 形态打 warning。**不做**别名映射表（那是自造标准）。
 - `model` / `version` / `speaker`：受 ComboBox options 校验，查无回落默认 sentinel（`""`）——这类**受校验离散值天然安全**，不会因复用产生脏值。
+
+### 14.6 variance 参数模式（delta / absolute）
+
+variance 参数（energy / breathiness / voicing / tension）有两种编辑模式，由 part 属性 `variance_param_mode` 控制：
+
+- **`delta`**（默认）：连续轨，归一化偏移量（energy/breathiness/tension `[-1,1]`，voicing `[0,1.25]`）。合成期 `Delta(predicted, userValue)` → 绝对声学值。
+- **`absolute`**：分段轨，dB 绝对值（`[-96, 0]` 或 `[-10, 10]`，与回显轨同单位）。未编辑帧 NaN = 跟随模型预测值；已编辑帧存用户画的绝对 dB 值。
+
+两种模式的数据**互不换算、互不迁移**：
+- 切到 absolute 时，delta 连续轨数据保留在 `Automations` 容器中（孤儿数据，隐藏不删），absolute 分段轨从空开始画。
+- 切回 delta 时，absolute 分段轨数据保留在 `PiecewiseAutomations` 容器中（孤儿数据），delta 连续轨恢复为切换前的原样。
+- 这与 ACE Studio 的「包络/实参」选项卡单向数据流一致：delta → absolute 显示跟随（已有 readback 机制），absolute → delta 不反向传播。
+
+**Voicing DeltaInverse**：absolute 模式下需要把用户画的 dB 目标值反推为等效 delta 系数。voicing 的 delta 函数下行是非线性（含 `(1-y)^12` 幂项），无解析逆函数，采用 40 次二分法数值求逆（域 `[0,1]` 单调递减，精度 ~2^-40 >> dB 精度需求）。上行 `y>1` 是线性分支，可直接解析求解。
+
+**回显轨裁剪**：absolute 模式下用户轨本身就是实参（已含预测 + 编辑），`SynthesizedParameters` 对该参数不再暴露只读回显轨（避免两条轨同值重复）。

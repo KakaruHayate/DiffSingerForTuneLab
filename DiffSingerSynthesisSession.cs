@@ -32,6 +32,9 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
     //   可编辑轨集合（构造期订阅其区间编辑）+ 回显轨集合（产物 SynthesizedParameters 按其 key 聚合）。
     readonly OrderedMap<PropertyKey, AutomationConfig> mReadbackConfigs;
 
+    // 绝对值模式下的 variance 轨 key 集合（用于 Render 分派）。
+    readonly HashSet<string> mAbsoluteVarianceKeys;
+
     // —— 调度状态（数据线程；按 note 间隙分块，账本式托管失效与产物）——
     readonly IActionEvent<IVoiceSynthesisNote> mNoteFieldModified;   // 「任一 note 任一字段变」聚合事件（宿主 WhenAnyItem，成员增删自动接线/退订）
     // 已订阅 RangeModified 的全部自动化轨（key → automation）。固定轨(variance/gender/speed)、seed、混音轨**皆**随
@@ -55,7 +58,11 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         // 构造期解析一次（驱动固定轨订阅与回显轨集合）；运行时 Render 按 part 属性另行解析、支持 model/version 切换。
         var pc = resolve(PropsOf(context.PartProperties));
         mConfig = pc?.Config;
-        mReadbackConfigs = pc != null ? BuildReadbackConfigs(pc.Config) : new OrderedMap<PropertyKey, AutomationConfig>();
+        mReadbackConfigs = pc != null ? BuildReadbackConfigs(context.PartProperties, pc.Config) : new OrderedMap<PropertyKey, AutomationConfig>();
+        // 绝对值模式：缓存使用绝对轨的 variance key 集合（Render 分派用）
+        mAbsoluteVarianceKeys = pc != null && VarianceModeOf(context.PartProperties) == VarianceModeAbsolute
+            ? new(Variances.Where(v => v.Use(pc.Config)).Select(v => v.Key), StringComparer.Ordinal)
+            : new HashSet<string>(StringComparer.Ordinal);  // delta 模式：空集合
 
         // 变更接线（handler 只做廉价标脏；重活延迟到 Committed 重分块）——见 §5.9。
         //   note 字段变更：宿主 WhenAnyItem 把「每个现有/未来成员的这几个属性事件」聚合成一个带成员标识的事件，
@@ -436,9 +443,11 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         AddF("blend", blendFlat, new[] { mixRows, nFrames });
         AddF("f0", acousticF0, new[] { 1, nFrames });   // 声学吃移调 f0（无音区偏移时即原始 f0 同引用）
 
-        // —— variance：预测 + 用户 delta 合成喂声学，同一份实参产回显 ——
-        //   用户曲线按帧求值（连续轨：未编辑处=中性基线 → Delta 恒得纯预测；编辑处 → 叠加），clamp 到声学值域。
-        //   回显（Use && Predict）= 实参（预测 + 用户 delta、clamp 后）——与 pitch 回显同语义：所见即喂给声学的值。
+        // —— variance：预测 + 用户曲线合成喂声学 ——
+        //   delta 模式（默认）：用户曲线为归一化偏移量，CombineVariance 用 Delta(x, y) 合成；
+        //   absolute 模式：用户曲线为 dB 绝对值（分段轨，NaN=未编辑），CombineVarianceAbsolute 通过
+        //   DeltaInverse 反推等效 delta 系数再走同一路径 → 输出 = 用户目标值。
+        //   回显轨仅在 delta 模式暴露（absolute 模式下用户轨即实参，回显冗余）。
         //   mulaw 声库（voicing_domain）三明治：预测解码成 dB 进公式、出公式编码回线上域喂声学；
         //   公式/回显/clamp 恒 dB 语义（见 VoicingDomainCodec 与 schema §14.2）。db 声库 codec=null、路径不变。
         var voicingCodec = VoicingDomainCodec.For(config.VoicingDomain, config.VoicingMu);
@@ -450,13 +459,18 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
                 ? auto.Evaluator.Evaluate(frameTimes)
                 : null;
             var codec = spec.Key == "voicing" ? voicingCodec : null;
-            var combined = CombineVariance(spec, predicted, user, nFrames, codec);
+
+            bool absolute = mAbsoluteVarianceKeys.Contains(spec.Key);
+            var combined = absolute
+                ? CombineVarianceAbsolute(spec, predicted, user, nFrames, codec)
+                : CombineVariance(spec, predicted, user, nFrames, codec);
 
             if (ac.HasInput(spec.Key))
                 AddF(spec.Key, codec == null ? combined : Array.ConvertAll(combined, codec.DbToWire),
                     new[] { 1, nFrames });
 
-            if (spec.Use(config) && spec.Predict(config) && predicted != null)
+            // 回显轨仅在 delta 模式 + 有预测时产生（absolute 模式下用户分段轨即实参、已自绘）
+            if (!absolute && spec.Use(config) && spec.Predict(config) && predicted != null)
                 varReadback[spec.Key] = BuildReadbackSegment(spec, combined, frameTimes, nFrames);
         }
 
@@ -665,6 +679,36 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
                 ? Math.Clamp(user[f], spec.EditMin, spec.EditMax)
                 : spec.Neutral;
             result[f] = (float)Math.Clamp(spec.Delta(x, (float)y), spec.AcousticMin, spec.AcousticMax);
+        }
+        return result;
+    }
+
+    // 绝对值模式：用户轨存 dB 值（分段形，NaN = 未编辑 = 跟随预测）。
+    //   已编辑帧：通过 DeltaInverse 把目标 dB 值反推为等效 delta 系数，再走 Delta 路径 → 输出 = 目标值（数值精度内）。
+    //   未编辑帧：透传预测值（Delta(x, Neutral) 在无 DeltaInverse 时退化为纯预测 + 中性偏移；线性参数 Neutral=0 即纯预测）。
+    static float[] CombineVarianceAbsolute(VarianceSpec spec, float[]? predicted, double[]? user, int n,
+        VoicingDomainCodec? codec = null)
+    {
+        var result = new float[n];
+        for (int f = 0; f < n; f++)
+        {
+            float x = predicted == null ? 0f : (f < predicted.Length ? predicted[f] : predicted[^1]);
+            if (codec != null) x = codec.WireToDb(x);
+            bool edited = user != null && !double.IsNaN(user[f]);
+            if (!edited)
+            {
+                // 未编辑：透传预测（经 Delta(x, Neutral) 保证 clamp 语义与 delta 模式一致）
+                result[f] = (float)Math.Clamp(spec.Delta(x, (float)spec.Neutral), spec.AcousticMin, spec.AcousticMax);
+            }
+            else
+            {
+                // 已编辑：把用户绝对 dB 值反推为 delta 系数 → 走同一条 Delta 路径
+                float target = (float)Math.Clamp(user[f], spec.AcousticMin, spec.AcousticMax);
+                float y = spec.DeltaInverse != null
+                    ? Math.Clamp(spec.DeltaInverse(x, target), spec.EditMin, spec.EditMax)
+                    : (float)spec.Neutral;
+                result[f] = (float)Math.Clamp(spec.Delta(x, y), spec.AcousticMin, spec.AcousticMax);
+            }
         }
         return result;
     }
@@ -944,13 +988,22 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
                 automation.RangeModified.Subscribe(OnRangeModified);
                 mSubscriptions[key] = automation;
             }
-        // 退订：已订阅但不再应有（gating 掉）、或宿主已撤下该轨(混音被取消选择)的。
+        // 退订 / 刷新：已订阅但不再应有（gating 掉）、或宿主已撤下该轨、或同一 key 的 automation 对象已更换
+        //   （如 continuous→piecewise 切换时数据容器变更，对象引用不同但仍需 RangeModified 通知）。
         foreach (var key in mSubscriptions.Keys.ToList())
-            if (!desired.Contains(key) || !mContext.Automations.ContainsKey(key))
+        {
+            if (!desired.Contains(key) || !mContext.Automations.TryGetValue(key, out var currentAuto))
             {
                 mSubscriptions[key].RangeModified.Unsubscribe(OnRangeModified);
                 mSubscriptions.Remove(key);
             }
+            else if (!ReferenceEquals(mSubscriptions[key], currentAuto))
+            {
+                mSubscriptions[key].RangeModified.Unsubscribe(OnRangeModified);
+                currentAuto.RangeModified.Subscribe(OnRangeModified);
+                mSubscriptions[key] = currentAuto;
+            }
+        }
     }
 
     void OnCommitted()
