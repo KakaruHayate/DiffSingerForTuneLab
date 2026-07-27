@@ -101,7 +101,7 @@ internal sealed class RuntimeHost : IDisposable
     {
         var options = new SessionOptions();
         if (mProvider == "cpu")
-            // onnxruntime 1.20.1 的 CPU EP 扩展层图优化（ORT_ENABLE_EXTENDED 及以上，含默认的 ORT_ENABLE_ALL）
+            // onnxruntime 1.23.x 的 CPU EP 扩展层图优化（ORT_ENABLE_EXTENDED 及以上，含默认的 ORT_ENABLE_ALL）
             //   在 DiffSinger 声学图上原生崩溃（AccessViolation，实测 Miwang/opencpop 两模型皆必崩、非文件损坏）；
             //   BASIC 及以下安全。故 CPU 会话封顶 BASIC（图优化语义保持，输出不受影响）。DML EP 走另一套优化，不受此坑。
             options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_BASIC;
