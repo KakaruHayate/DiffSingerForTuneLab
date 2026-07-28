@@ -8,7 +8,10 @@ internal static class RuntimePlatform
     public const string CpuProvider = "cpu";
     public const string DirectMlProvider = "directml";
 
-    public static bool SupportsDirectML => OperatingSystem.IsWindows();
+    public static string RuntimeIdentifier
+        => GetRuntimeIdentifier(CurrentOperatingSystem, RuntimeInformation.ProcessArchitecture);
+
+    public static bool SupportsDirectML => RuntimeIdentifier == "win-x64";
 
     public static string DefaultProvider => SupportsDirectML ? DirectMlProvider : CpuProvider;
 
@@ -20,31 +23,39 @@ internal static class RuntimePlatform
     public static bool IsDirectML(string? provider)
         => NormalizeProvider(provider) == DirectMlProvider;
 
-    public static string RuntimeExecutableName => OperatingSystem.IsWindows() ? "MLRuntime.exe" : "MLRuntime";
-
-    public static string RuntimeIdentifier
+    public static string RuntimeExecutableName => RuntimeIdentifier switch
     {
-        get
-        {
-            var os = OperatingSystem.IsWindows() ? "win"
-                : OperatingSystem.IsMacOS() ? "osx"
-                : OperatingSystem.IsLinux() ? "linux"
-                : throw new PlatformNotSupportedException("DiffSinger 仅支持 Windows、macOS 和 Linux。");
-            var architecture = RuntimeInformation.ProcessArchitecture switch
-            {
-                Architecture.X86 => "x86",
-                Architecture.X64 => "x64",
-                Architecture.Arm => "arm",
-                Architecture.Arm64 => "arm64",
-                _ => throw new PlatformNotSupportedException(
-                    $"不支持的进程架构：{RuntimeInformation.ProcessArchitecture}"),
-            };
-            return $"{os}-{architecture}";
-        }
+        "win-x64" => "MLRuntime.exe",
+        "osx-arm64" or "linux-x64" => "MLRuntime",
+        _ => throw new InvalidOperationException("RuntimeIdentifier returned an unsupported RID."),
+    };
+
+    public static string OnnxRuntimeLibraryName => RuntimeIdentifier switch
+    {
+        "win-x64" => "onnxruntime.dll",
+        "osx-arm64" => "libonnxruntime.dylib",
+        "linux-x64" => "libonnxruntime.so",
+        _ => throw new InvalidOperationException("RuntimeIdentifier returned an unsupported RID."),
+    };
+
+    internal static string GetRuntimeIdentifier(OSPlatform operatingSystem, Architecture architecture)
+    {
+        if (operatingSystem == OSPlatform.Windows && architecture == Architecture.X64)
+            return "win-x64";
+        if (operatingSystem == OSPlatform.OSX && architecture == Architecture.Arm64)
+            return "osx-arm64";
+        if (operatingSystem == OSPlatform.Linux && architecture == Architecture.X64)
+            return "linux-x64";
+
+        throw new PlatformNotSupportedException(
+            $"DiffSinger does not support {operatingSystem} on {architecture}. " +
+            "Supported platforms: win-x64, osx-arm64, linux-x64.");
     }
 
-    public static string OnnxRuntimeLibraryName => OperatingSystem.IsWindows() ? "onnxruntime.dll"
-        : OperatingSystem.IsMacOS() ? "libonnxruntime.dylib"
-        : OperatingSystem.IsLinux() ? "libonnxruntime.so"
-        : throw new PlatformNotSupportedException("DiffSinger 仅支持 Windows、macOS 和 Linux。");
+    private static OSPlatform CurrentOperatingSystem
+        => OperatingSystem.IsWindows() ? OSPlatform.Windows
+            : OperatingSystem.IsMacOS() ? OSPlatform.OSX
+            : OperatingSystem.IsLinux() ? OSPlatform.Linux
+            : throw new PlatformNotSupportedException(
+                "DiffSinger supports only Windows, macOS, and Linux.");
 }

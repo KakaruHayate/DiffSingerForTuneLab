@@ -19,7 +19,8 @@
     <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</DiffSingerRuntimeIdentifier>
     <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-arm64</DiffSingerRuntimeIdentifier>
     <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</DiffSingerRuntimeIdentifier>
-    <UseDirectML>$([System.String]::Copy('$(DiffSingerRuntimeIdentifier)').StartsWith('win-'))</UseDirectML>
+    <UseDirectML Condition="'$(DiffSingerRuntimeIdentifier)' == 'win-x64'">True</UseDirectML>
+    <UseDirectML Condition="'$(UseDirectML)' == ''">False</UseDirectML>
   </PropertyGroup>
 
   <!-- tools/ 是 dev-only 独立项目（冒烟测试）、MLRuntime/ 是随包分发的独立 exe（自有 csproj/入口）；

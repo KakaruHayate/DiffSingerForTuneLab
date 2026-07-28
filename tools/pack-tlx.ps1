@@ -10,6 +10,29 @@ param(
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
+$hostOperatingSystem = if (
+    [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+        [System.Runtime.InteropServices.OSPlatform]::Windows)
+) {
+    "win"
+} elseif (
+    [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+        [System.Runtime.InteropServices.OSPlatform]::OSX)
+) {
+    "osx"
+} elseif (
+    [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+        [System.Runtime.InteropServices.OSPlatform]::Linux)
+) {
+    "linux"
+} else {
+    throw "Unsupported packaging host: $([System.Runtime.InteropServices.RuntimeInformation]::OSDescription)"
+}
+$targetOperatingSystem = $RuntimeIdentifier.Split("-")[0]
+if ($targetOperatingSystem -ne $hostOperatingSystem) {
+    throw "Package $RuntimeIdentifier on a $targetOperatingSystem host; current host is $hostOperatingSystem. Unix packages must be created on Unix so MLRuntime retains executable permissions."
+}
+
 $repo = Split-Path $PSScriptRoot -Parent
 $runId = [Guid]::NewGuid().ToString("N")
 $artifacts = Join-Path $repo "artifacts/tlx/$RuntimeIdentifier/$runId"
@@ -88,8 +111,11 @@ $manifestJson = $manifest | ConvertTo-Json -Depth 10
 $runtimeName = if ($RuntimeIdentifier -eq "win-x64") { "MLRuntime.exe" } else { "MLRuntime" }
 $runtimePath = Join-Path $mlStage $runtimeName
 if (-not (Test-Path $runtimePath)) { throw "Missing MLRuntime apphost: $runtimePath" }
-if ($RuntimeIdentifier -ne "win-x64" -and -not $IsWindows) {
+if ($RuntimeIdentifier -ne "win-x64") {
     chmod +x $runtimePath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to mark MLRuntime executable: $runtimePath"
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null

@@ -13,7 +13,8 @@
     <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</DiffSingerRuntimeIdentifier>
     <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-arm64</DiffSingerRuntimeIdentifier>
     <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</DiffSingerRuntimeIdentifier>
-    <UseDirectML>$([System.String]::Copy('$(DiffSingerRuntimeIdentifier)').StartsWith('win-'))</UseDirectML>
+    <UseDirectML Condition="'$(DiffSingerRuntimeIdentifier)' == 'win-x64'">True</UseDirectML>
+    <UseDirectML Condition="'$(UseDirectML)' == ''">False</UseDirectML>
     <!-- OpenUtau 原码风格（nullable 关闭）；签名保持二进制兼容，勿加注解改动风格。 -->
     <Nullable>disable</Nullable>
     <RootNamespace>OpenUtau</RootNamespace>
