@@ -1,6 +1,7 @@
 # PR 验证工作流：构建 + 单元测试 + 冒烟测试编译
 # 每次 PR 到 master 时自动触发，确保代码能编译、测试通过、冒烟测试可构建。
 # 与 build-tlx.yml（ nightly 打包 .tlx）互补：pr-test 轻量快速、tlx 构建重但产 artifact。
+
 name: PR Test
 
 on:
