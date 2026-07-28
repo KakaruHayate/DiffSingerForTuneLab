@@ -9,17 +9,24 @@
     <Nullable>enable</Nullable>
     <RootNamespace>DiffSingerForTuneLab.SmokeTest</RootNamespace>
     <AssemblyName>DiffSingerSmokeTest</AssemblyName>
+    <DiffSingerRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-arm64</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</DiffSingerRuntimeIdentifier>
+    <UseDirectML>$([System.String]::Copy('$(DiffSingerRuntimeIdentifier)').StartsWith('win-'))</UseDirectML>
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 单包内 onnxruntime.dll 同含 DirectML EP 与 CPU EP；插件正式引用同一包。 -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" />
+    <!-- 与正式插件相同：Windows 构建可测 DirectML，macOS/Linux 构建只带 CPU EP。 -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" Condition="'$(UseDirectML)' == 'True'" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.0" Condition="'$(UseDirectML)' != 'True'" />
     <PackageReference Include="YamlDotNet" Version="18.0.0" />
   </ItemGroup>
 
   <!-- IPC 基准（bench-ipc 模式）：链接插件的运行时核心（零 TuneLab 依赖），直接对同一份输入跑
        InProcessModelSession vs RemoteModelSession，量 IPC 开销。与 MLRuntime.exe 同法链接、不引整个插件工程。 -->
   <ItemGroup>
+    <Compile Include="..\..\RuntimePlatform.cs" Link="Core\RuntimePlatform.cs" />
     <Compile Include="..\..\IModelSession.cs" Link="Core\IModelSession.cs" />
     <Compile Include="..\..\TensorCodec.cs" Link="Core\TensorCodec.cs" />
     <Compile Include="..\..\RuntimeProtocol.cs" Link="Core\RuntimeProtocol.cs" />

@@ -1,47 +1,102 @@
-# 打 .tlx 分发包：构建插件并把输出目录【内容】压成 zip（改名 .tlx）。
-# .tlx = zip，根目录直接含 manifest.json + dll + runtimes/ 子树（勿套外层文件夹）。
-# ONNX 原生库在 runtimes/win-x64/native/，靠整树递归打入、勿扁平化。
-# 只有 .tlx 文件能被 TuneLab 安装（拖文件夹不装，见 Editor.OnDrop / InstallExtensions）。
-# 用法: pwsh tools/pack-tlx.ps1 [-Configuration Release]
-param([string]$Configuration = "Release")
+# Build one RID-specific .tlx package. The package root contains manifest.json, managed assemblies,
+# runtimes/<rid>/native/, and the framework-dependent MLRuntime apphost under mlruntime/.
+# Usage: pwsh tools/pack-tlx.ps1 [-Configuration Release] [-RuntimeIdentifier win-x64|osx-arm64|linux-x64]
+param(
+    [string]$Configuration = "Release",
+    [ValidateSet("win-x64", "osx-arm64", "linux-x64")]
+    [string]$RuntimeIdentifier = "win-x64"
+)
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $repo = Split-Path $PSScriptRoot -Parent
-$source = Join-Path $repo "bin/$Configuration/net8.0"
+$runId = [Guid]::NewGuid().ToString("N")
+$artifacts = Join-Path $repo "artifacts/tlx/$RuntimeIdentifier/$runId"
+$pluginPublish = Join-Path $artifacts "plugin-publish"
+$source = Join-Path $artifacts "package"
+$mlSource = Join-Path $artifacts "mlruntime-publish"
+$mlStage = Join-Path $source "mlruntime"
 $out = Join-Path $PSScriptRoot "tlx"
 
-dotnet build (Join-Path $repo "DiffSingerForTuneLab.csproj") -c $Configuration
-dotnet build (Join-Path $repo "MLRuntime/MLRuntime.csproj") -c $Configuration
+New-Item -ItemType Directory -Force -Path $pluginPublish, $source, $mlSource | Out-Null
 
-# MLRuntime.exe 子进程：暂存进插件输出的 mlruntime/ 子目录（自带 onnxruntime + runtimes/），随后一并打进 .tlx。
-$mlSource = Join-Path $repo "MLRuntime/bin/$Configuration/net8.0"
-$mlStage = Join-Path $source "mlruntime"
-if (Test-Path $mlStage) { Remove-Item $mlStage -Recurse -Force }
-New-Item -ItemType Directory -Force -Path $mlStage | Out-Null
-Copy-Item -Path (Join-Path $mlSource "*") -Destination $mlStage -Recurse -Force
-
-# 去重 onnxruntime：MLRuntime 子进程经 OnnxNativeResolver 改从父插件目录 runtimes/ 加载原生库，
-# 不再自带一份（省 ~15MB×平台）。删掉暂存里的 mlruntime/runtimes/（父目录整树 runtimes/ 仍在）。
-$mlRuntimes = Join-Path $mlStage "runtimes"
-if (Test-Path $mlRuntimes) { Remove-Item $mlRuntimes -Recurse -Force }
-
-# 剪除输出【根目录】冗余的原生库副本 + DirectML 调试符号：规范副本在 runtimes/<rid>/native/，
-# 宿主经 deps.json（AssemblyDependencyResolver）从那里解析、根部这几份用不上。某些 SDK 版本
-# （如 CI 的 10.x）会把它们额外拷到输出根、白占 ~17MB，某些（本机 8.x）不拷——显式剪除以保证
-# 跨环境产物一致、精简。只删根部，runtimes/ 整树不动。
-foreach ($f in 'DirectML.dll','DirectML.pdb','DirectML.Debug.dll','DirectML.Debug.pdb','onnxruntime.dll','onnxruntime.lib','onnxruntime_providers_shared.dll','onnxruntime_providers_shared.lib') {
-    $p = Join-Path $source $f
-    if (Test-Path $p) { Remove-Item $p -Force }
+function Invoke-DotNet {
+    & dotnet @args
+    if ($LASTEXITCODE -ne 0) { throw "dotnet failed with exit code $LASTEXITCODE" }
 }
 
-# 从 manifest.json 取 id + version 命名产物
-$desc = Get-Content (Join-Path $source "manifest.json") -Raw | ConvertFrom-Json
-$tlx = Join-Path $out ("$($desc.id)-$($desc.version).tlx")
+# Run one pack script per clean checkout/runner. Do not launch multiple RIDs concurrently in the same worktree,
+# because NuGet restore shares project obj files.
+Invoke-DotNet restore (Join-Path $repo "DiffSingerForTuneLab.csproj") -r $RuntimeIdentifier -p:NuGetAudit=false
+Invoke-DotNet restore (Join-Path $repo "MLRuntime/MLRuntime.csproj") -r $RuntimeIdentifier -p:NuGetAudit=false
+Invoke-DotNet publish (Join-Path $repo "DiffSingerForTuneLab.csproj") `
+    -c $Configuration -r $RuntimeIdentifier --self-contained false --no-restore -o $pluginPublish
+Invoke-DotNet publish (Join-Path $repo "MLRuntime/MLRuntime.csproj") `
+    -c $Configuration -r $RuntimeIdentifier --self-contained false --no-restore -o $mlSource
+
+# Build the package tree from publish outputs instead of deleting unwanted files in place.
+# Managed/plugin content excludes flattened native assets; those are restored to runtimes/<rid>/native below.
+$nativeFileNames = @(
+    "DirectML.dll", "DirectML.pdb", "DirectML.Debug.dll", "DirectML.Debug.pdb",
+    "onnxruntime.dll", "onnxruntime.lib", "onnxruntime_providers_shared.dll",
+    "onnxruntime_providers_shared.lib", "libonnxruntime.dylib", "libonnxruntime.so"
+)
+Get-ChildItem $pluginPublish | Where-Object { $_.Name -notin $nativeFileNames } |
+    Copy-Item -Destination $source -Recurse -Force
+
+# Stage MLRuntime below the plugin, excluding its duplicate flattened ONNX native assets.
+New-Item -ItemType Directory -Force -Path $mlStage | Out-Null
+Get-ChildItem $mlSource | Where-Object { $_.Name -notin $nativeFileNames -and $_.Name -ne "runtimes" } |
+    Copy-Item -Destination $mlStage -Recurse -Force
+# Each publish uses one explicit RID, so only that RID's native assets are present.
+$native = Join-Path $source "runtimes/$RuntimeIdentifier/native"
+New-Item -ItemType Directory -Force -Path $native | Out-Null
+
+# RID publish flattens native assets into the publish root, while the plugin's deps.json retains their canonical
+# runtimes/<rid>/native paths. Restore that layout for TuneLab's AssemblyDependencyResolver.
+$nativeFiles = if ($RuntimeIdentifier -eq "win-x64") {
+    @("DirectML.dll", "onnxruntime.dll", "onnxruntime.lib", "onnxruntime_providers_shared.dll", "onnxruntime_providers_shared.lib")
+} elseif ($RuntimeIdentifier -eq "osx-arm64") {
+    @("libonnxruntime.dylib")
+} else {
+    @("libonnxruntime.so")
+}
+foreach ($file in $nativeFiles) {
+    $rootCopy = Join-Path $pluginPublish $file
+    if (Test-Path $rootCopy) { Copy-Item $rootCopy (Join-Path $native $file) -Force }
+}
+
+$onnxNativeName = if ($RuntimeIdentifier -eq "win-x64") { "onnxruntime.dll" }
+    elseif ($RuntimeIdentifier -eq "osx-arm64") { "libonnxruntime.dylib" }
+    else { "libonnxruntime.so" }
+if (-not (Test-Path (Join-Path $native $onnxNativeName))) {
+    throw "Missing ONNX Runtime native library: $onnxNativeName"
+}
+if ($RuntimeIdentifier -eq "win-x64" -and -not (Test-Path (Join-Path $native "DirectML.dll"))) {
+    throw "Missing DirectML.dll in Windows package"
+}
+
+
+# A RID-specific package advertises only the RID it actually contains.
+$manifestPath = Join-Path $source "manifest.json"
+$manifest = Get-Content $manifestPath -Raw -Encoding utf8 | ConvertFrom-Json
+$manifest.platforms = @($RuntimeIdentifier)
+$manifestJson = $manifest | ConvertTo-Json -Depth 10
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.UTF8Encoding]::new($false))
+
+$runtimeName = if ($RuntimeIdentifier -eq "win-x64") { "MLRuntime.exe" } else { "MLRuntime" }
+$runtimePath = Join-Path $mlStage $runtimeName
+if (-not (Test-Path $runtimePath)) { throw "Missing MLRuntime apphost: $runtimePath" }
+if ($RuntimeIdentifier -ne "win-x64" -and -not $IsWindows) {
+    chmod +x $runtimePath
+}
 
 New-Item -ItemType Directory -Force -Path $out | Out-Null
-if (Test-Path $tlx) { Remove-Item $tlx -Force }
+$tlx = Join-Path $out ("$($manifest.id)-$($manifest.version)-$RuntimeIdentifier.tlx")
+if (Test-Path $tlx) {
+    $tlx = Join-Path $out ("$($manifest.id)-$($manifest.version)-$RuntimeIdentifier-$runId.tlx")
+}
 [System.IO.Compression.ZipFile]::CreateFromDirectory($source, $tlx)
 
-Write-Host "已打包 $tlx"
+Write-Host "Packed $tlx"

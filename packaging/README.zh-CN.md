@@ -2,7 +2,7 @@
 
 基于 [DiffSinger](https://github.com/openvpi/DiffSinger) 的 TuneLab 歌声合成引擎。直接读取**社区标准格式**的 DiffSinger 声库——即包含 `dsconfig.yaml` + 角色元数据 + 预测器子目录的模型文件夹——无需转换、无需重新打包。
 
-> 仅支持 **Windows**。可选 GPU 加速（DirectML，兼容大多数独显/核显），无 GPU 时自动可切 CPU。
+> 支持 **Windows x64**、**macOS Apple 芯片（arm64）** 和 **Linux x64**。Windows 可选 DirectML GPU 或 CPU 推理；macOS 与 Linux 当前仅支持 CPU EP。
 
 ---
 
@@ -11,10 +11,10 @@
 插件**不自带任何模型**，需要你自己放入。默认扫描目录：
 
 ```
-%APPDATA%\DiffSingerForTuneLab\Voices
+<应用数据目录>/DiffSingerForTuneLab/Voices
 ```
 
-（即 `C:\Users\<你的用户名>\AppData\Roaming\DiffSingerForTuneLab\Voices`，插件首次启动会自动创建这个空目录。）
+这里的应用数据目录由系统决定（例如 Windows 的 `%APPDATA%`，不少 Linux 桌面环境为 `~/.config`）；插件首次启动会自动创建目录。
 
 把**模型文件夹整个**放进去即可，例如：
 
@@ -41,7 +41,7 @@ Voices\
 DiffSinger 声学模型输出的是梅尔频谱，需要**声码器**才能还原成声音。默认声码器目录：
 
 ```
-%APPDATA%\DiffSingerForTuneLab\Vocoders\<声码器名>\
+<应用数据目录>/DiffSingerForTuneLab/Vocoders/<声码器名>/
    ├─ vocoder.yaml
    └─ <模型>.onnx
 ```
@@ -62,7 +62,7 @@ DiffSinger 声学模型输出的是梅尔频谱，需要**声码器**才能还�
 |---|---|---|
 | **声库目录** | 追加的模型扫描目录（逐行添加） | 空（仅默认目录） |
 | **声码器目录** | 追加的声码器扫描目录（逐行添加） | 空（仅默认目录） |
-| **执行设备** | `GPU (DirectML)` 或 `CPU`。GPU 明显更快；驱动异常/无独显时改 CPU | GPU (DirectML) |
+| **执行设备** | Windows：`GPU (DirectML)` 或 `CPU`；macOS/Linux：仅 CPU | Windows 默认 DirectML，其余平台默认 CPU |
 | **推理模式** | `隔离进程`在独立子进程跑 ONNX，原生崩溃不会拖垮 TuneLab（子进程起不来时——如被杀软拦截——自动退回进程内）；`进程内`直接在 TuneLab 内跑 | 隔离进程 |
 | **采样步数** | 扩散采样步数。越大越精细也越慢，通常 20 足够 | 20 |
 | **张量缓存** | 缓存推理中间结果，重复合成同段更快、且结果可复现 | 开 |
@@ -144,7 +144,7 @@ voices:                        # 可选：出现即白名单；缺省=整模型�
 
 - **模型没出现在歌手列表里** → 检查目录里是否**同时**有 `dsconfig.yaml` 和 `character.yaml`（或 `.txt`）；确认放对了目录（默认目录或设置里追加的目录）；改完设置会自动重扫。
 - **合成没有声音** → 见 §2，多半是声码器缺失或名字对不上。
-- **太慢** → 执行设备设为 GPU (DirectML)；或调低采样步数；保持张量缓存开启（重复合成会显著变快）。
+- **太慢** → Windows 可选 GPU (DirectML)；各平台都可调低采样步数并保持张量缓存开启。Linux 还需要 ONNX Runtime 使用的系统 OpenMP 运行库（常见包提供 `libgomp.so.1`）。
 - **想复用某次合成结果** → 保持张量缓存开启；同样的输入会命中缓存、结果可复现。
 
 ---

@@ -2,7 +2,7 @@
 
 A [DiffSinger](https://github.com/openvpi/DiffSinger)-based singing voice synthesis engine for TuneLab. It reads DiffSinger voicebanks in the **standard community format** — a model folder containing `dsconfig.yaml` + character metadata + predictor subdirectories — directly, with no conversion or repackaging.
 
-> **Windows only.** Optional GPU acceleration (DirectML, works with most discrete/integrated GPUs); falls back to CPU when no GPU is available.
+> Supported packages: **Windows x64**, **macOS Apple Silicon (arm64)**, and **Linux x64**. Windows offers DirectML GPU acceleration or CPU inference; macOS and Linux currently use the CPU execution provider only.
 
 ---
 
@@ -11,10 +11,10 @@ A [DiffSinger](https://github.com/openvpi/DiffSinger)-based singing voice synthe
 The plugin **ships with no models** — you supply your own. Default scan directory:
 
 ```
-%APPDATA%\DiffSingerForTuneLab\Voices
+<application-data>/DiffSingerForTuneLab/Voices
 ```
 
-(i.e. `C:\Users\<you>\AppData\Roaming\DiffSingerForTuneLab\Voices` — created automatically on first launch.)
+This is the operating system's roaming application-data directory (for example `%APPDATA%` on Windows and `~/.config` on many Linux desktops). The plugin creates the directory on first launch.
 
 Drop the **whole model folder** in, e.g.:
 
@@ -41,7 +41,7 @@ Open **Settings → Extensions → DiffSinger** and add folders to **"Voicebank 
 A DiffSinger acoustic model outputs a mel-spectrogram; a **vocoder** is required to turn it into audio. Default vocoder directory:
 
 ```
-%APPDATA%\DiffSingerForTuneLab\Vocoders\<vocoder-name>\
+<application-data>/DiffSingerForTuneLab/Vocoders/<vocoder-name>/
    ├─ vocoder.yaml
    └─ <model>.onnx
 ```
@@ -62,7 +62,7 @@ Vocoders can also live elsewhere: open **Settings → Extensions → DiffSinger*
 |---|---|---|
 | **Voicebank directories** | Extra model scan dirs (one per row) | empty (default dir only) |
 | **Vocoder directories** | Extra vocoder scan dirs (one per row) | empty (default dir only) |
-| **Execution device** | `GPU (DirectML)` or `CPU`. GPU is noticeably faster; use CPU if the driver misbehaves or you have no GPU | GPU (DirectML) |
+| **Execution device** | Windows: `GPU (DirectML)` or `CPU`; macOS/Linux: CPU only | DirectML on Windows; CPU elsewhere |
 | **Inference mode** | `Isolated process` runs ONNX in a separate process so a native crash can't take down TuneLab (auto-falls back to in-process if it can't start, e.g. blocked by antivirus); `In-process` runs inside TuneLab | Isolated process |
 | **Sampling steps** | Diffusion sampling steps. Higher = finer but slower; 20 is usually enough | 20 |
 | **Tensor cache** | Caches inference intermediates — repeated synthesis of the same segment is faster and reproducible | on |
@@ -144,7 +144,7 @@ Morphs a sound **between phonemes over time** — e.g. an `a` gliding smoothly t
 
 - **Model missing from the singer list** → verify the folder has **both** `dsconfig.yaml` and `character.yaml` (or `.txt`); confirm it's under the default dir or a dir you added in settings; settings changes auto-rescan.
 - **No sound after synthesis** → see §2; usually a missing or misnamed vocoder.
-- **Too slow** → set execution device to GPU (DirectML); or lower the sampling steps; keep the tensor cache on (repeated synthesis gets much faster).
+- **Too slow** → on Windows, select GPU (DirectML); on every platform, lower sampling steps and keep the tensor cache enabled. Linux requires the system OpenMP runtime (commonly `libgomp.so.1`) used by ONNX Runtime.
 - **Reproducing a previous render** → keep the tensor cache on; identical input hits the cache and reproduces the result.
 
 ---

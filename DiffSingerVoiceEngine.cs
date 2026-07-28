@@ -141,7 +141,8 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
     // 模型缓存按当前执行设备设置懒建；provider 变更则弃旧建新（旧缓存 Dispose 释放原生会话）。
     DiffSingerModelCache EnsureModelCache()
     {
-        var provider = mSettings.GetString(KeyExecutionProvider, "directml");
+        var provider = RuntimePlatform.NormalizeProvider(
+            mSettings.GetString(KeyExecutionProvider, RuntimePlatform.DefaultProvider));
         var runtimeMode = mSettings.GetString(KeyRuntimeMode, "subprocess");
         if (mModelCache == null || mProviderInUse != provider || mRuntimeModeInUse != runtimeMode)
         {
@@ -169,11 +170,7 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
             },
             {
                 (KeyExecutionProvider, L.Tr("Execution device")),
-                ComboBoxConfig.Create(new List<ComboBoxItem>
-                {
-                    new(PropertyValue.Create("directml"), L.Tr("GPU (DirectML)")),
-                    new(PropertyValue.Create("cpu"), L.Tr("CPU")),
-                })
+                ComboBoxConfig.Create(ExecutionProviderItems())
             },
             {
                 (KeyRuntimeMode, L.Tr("Inference mode")),
@@ -197,6 +194,15 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
             },
         };
         return ObjectConfig.Create(properties);
+    }
+
+    static List<ComboBoxItem> ExecutionProviderItems()
+    {
+        var items = new List<ComboBoxItem>();
+        if (RuntimePlatform.SupportsDirectML)
+            items.Add(new(PropertyValue.Create(RuntimePlatform.DirectMlProvider), L.Tr("GPU (DirectML)")));
+        items.Add(new(PropertyValue.Create(RuntimePlatform.CpuProvider), L.Tr("CPU")));
+        return items;
     }
 
     // 目录列表（变长）：每行一个路径 TextBox、+ 追加空行。行数按当前已存值算——

@@ -13,6 +13,13 @@
     <!-- 插件作为动态加载的程序集：令 NuGet 私有依赖随输出复制进包目录（宿主 ALC 从包目录加载，
          不会从本机 NuGet 缓存解析），并生成适配动态加载的 deps.json。Private=false 的 SDK 引用不受影响、仍不复制。 -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <!-- RID 决定 ONNX Runtime 包：Windows 保留 DirectML，macOS/Linux 使用跨平台 CPU 包。
+         本地未显式传 -r 时按构建宿主给出已支持的默认 RID；正式 TLX 始终由 pack-tlx.ps1 显式传入。 -->
+    <DiffSingerRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-arm64</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</DiffSingerRuntimeIdentifier>
+    <UseDirectML>$([System.String]::Copy('$(DiffSingerRuntimeIdentifier)').StartsWith('win-'))</UseDirectML>
   </PropertyGroup>
 
   <!-- tools/ 是 dev-only 独立项目（冒烟测试）、MLRuntime/ 是随包分发的独立 exe（自有 csproj/入口）；
@@ -60,9 +67,8 @@
     <Content Include="packaging\README.zh-CN.md" Link="README.zh-CN.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- 把 DirectML.dll 拷进 runtimes/win-x64/native/（与 onnxruntime.dll 同目录）——见上方 PackageReference 注释。
-       deploy-dev / pack-tlx 均复制 bin 输出整树，故落到此处即随部署与 .tlx 一并分发。 -->
-  <Target Name="CopyDirectMLNative" AfterTargets="Build;Publish">
+  <!-- Windows x64 包把 DirectML.dll 放到 onnxruntime.dll 同目录；CPU-only 的 macOS/Linux 构建不执行。 -->
+  <Target Name="CopyDirectMLNative" AfterTargets="Build;Publish" Condition="'$(UseDirectML)' == 'True'">
     <Copy SourceFiles="$(PkgMicrosoft_AI_DirectML)\bin\x64-win\DirectML.dll"
           DestinationFolder="$(OutDir)runtimes\win-x64\native"
           SkipUnchangedFiles="true" />
@@ -82,21 +88,14 @@
     <EmbeddedResource Include="G2p\Data\g2p-ru.zip" LogicalName="DiffSingerForTuneLab.G2p.Data.g2p-ru.zip" />
     <EmbeddedResource Include="G2p\Data\g2p-fil.zip" LogicalName="DiffSingerForTuneLab.G2p.Data.g2p-fil.zip" />
   </ItemGroup>
-  <!-- 私有依赖：随包分发、进本插件专属 ALC。
-       · YamlDotNet 解析声库的 dsconfig / character / dsdict。
-       · OnnxRuntime.DirectML 单包内的 onnxruntime.dll 同含 DirectML EP 与 CPU EP；原生库随 EnableDynamicLoading
-         输出到 runtimes/win-x64/native/，宿主 ALC 经 deps.json（AssemblyDependencyResolver）解析——勿扁平化。 -->
+  <!-- 私有依赖：随包分发、进本插件专属 ALC。每次构建只选一个 ONNX Runtime 包，避免两个包提供
+       同名托管程序集/原生库而冲突。Windows x64 保留 DirectML（其中也含 CPU EP）；macOS/Linux 用 CPU 包。 -->
   <ItemGroup>
     <PackageReference Include="YamlDotNet" Version="18.0.0" />
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" />
-    <!-- DirectML.dll 必须随包分发：OnnxRuntime.DirectML 单包只带 onnxruntime.dll，其硬依赖的 DirectML.dll
-         由传递包 Microsoft.AI.DirectML 提供、却躺在 bin/x64-win/（非 runtimes/<rid>/native 布局），SDK 默认
-         不随输出复制。于是运行时只能吃用户 System32 里那份——旧 Windows（如 Win10 19045）自带的是 2020 年的
-         DirectML 1.0，喂不动 onnxruntime 的 DML EP 用到的新 API → AppendExecutionProvider_DML 直接失败
-         （实测某测试者 GTX1660Ti 就栽在此）。故显式引该包、把 DirectML.dll 拷进 runtimes/win-x64/native/（与
-         onnxruntime.dll 同目录，NativeLibrary 的 altered-search-path 令其优先于 System32 被加载，已实测生效）。
-         版本须与 onnxruntime 配对：ort 1.23 配 DirectML 1.15.4（与 OpenUtau 同）。 -->
-    <PackageReference Include="Microsoft.AI.DirectML" Version="1.15.4" GeneratePathProperty="true" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" Condition="'$(UseDirectML)' == 'True'" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.0" Condition="'$(UseDirectML)' != 'True'" />
+    <!-- DirectML.dll 必须随 Windows 包分发；版本须与 ORT 1.23 配对。 -->
+    <PackageReference Include="Microsoft.AI.DirectML" Version="1.15.4" GeneratePathProperty="true" Condition="'$(UseDirectML)' == 'True'" />
     <!-- 张量缓存键哈希：XxHash64（模型文件内容哈希 + 序列化输入）。 -->
     <PackageReference Include="System.IO.Hashing" Version="8.0.0" />
   </ItemGroup>

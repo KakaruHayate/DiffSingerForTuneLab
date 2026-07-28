@@ -18,20 +18,15 @@ internal static class OnnxNativeResolver
         if (pluginDir == null)
             return;
 
-        string rid = RuntimeInformation.ProcessArchitecture switch
-        {
-            Architecture.X86 => "win-x86",
-            Architecture.Arm64 => "win-arm64",
-            _ => "win-x64",
-        };
-        var candidate = Path.Combine(pluginDir, "runtimes", rid, "native", "onnxruntime.dll");
+        var candidate = Path.Combine(
+            pluginDir, "runtimes", RuntimePlatform.RuntimeIdentifier, "native", RuntimePlatform.OnnxRuntimeLibraryName);
 
         NativeLibrary.SetDllImportResolver(typeof(Microsoft.ML.OnnxRuntime.SessionOptions).Assembly, (name, _, _) =>
             name == "onnxruntime" && File.Exists(candidate) && NativeLibrary.TryLoad(candidate, out var handle)
                 ? handle
                 : IntPtr.Zero);   // 回退默认解析（自带 runtimes/ 仍在时可载）
 
-        // 预载随包 DirectML.dll（否则 DML EP delay-load 会走到 System32 的旧版而失败，见 DirectMlNative 说明）。
+        // 仅 Windows 的 DirectML 构建需要预载；CPU-only 的 macOS/Linux 上该方法直接返回。
         DirectMlNative.Preload(pluginDir);
     }
 }

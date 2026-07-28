@@ -35,16 +35,16 @@ public sealed class DiffSingerModelCache : IDisposable
 
     public DiffSingerModelCache(string provider, string runtimeMode, ILogger logger)
     {
-        mProvider = provider;
+        mProvider = RuntimePlatform.NormalizeProvider(provider);
         mLogger = logger;
         if (Environment.GetEnvironmentVariable("DIFFSINGER_RUNTIME_LOOPBACK") == "1")
         {
-            mRuntimeClient = new RuntimeClient(provider, p => new LoopbackTransport(new RuntimeHost(p)), canRespawn: false);
+            mRuntimeClient = new RuntimeClient(mProvider, p => new LoopbackTransport(new RuntimeHost(p)), canRespawn: false);
             mLogger.Info("DiffSinger：MLRuntime loopback 模式（dev）");
         }
         else if (runtimeMode != "inprocess")   // 默认 subprocess
         {
-            mRuntimeClient = TryCreateSubprocessClient(provider);
+            mRuntimeClient = TryCreateSubprocessClient(mProvider);
         }
     }
 
@@ -53,7 +53,7 @@ public sealed class DiffSingerModelCache : IDisposable
     RuntimeClient? TryCreateSubprocessClient(string provider)
     {
         var dir = Path.GetDirectoryName(typeof(DiffSingerModelCache).Assembly.Location)!;
-        var exe = Path.Combine(dir, "mlruntime", "MLRuntime.exe");
+        var exe = Path.Combine(dir, "mlruntime", RuntimePlatform.RuntimeExecutableName);
         Action<string> exeLog = line => mLogger.Info($"[MLRuntime] {line}");   // 子进程 stdout/stderr 转发
         Func<string, IRuntimeTransport> factory = p => new PipeTransport(exe, p, exeLog);
         try
@@ -170,7 +170,7 @@ public sealed class DiffSingerModelCache : IDisposable
             mLogger.Info($"DiffSinger：加载 {fileName} · MLRuntime({mProvider})");
             return remote;
         }
-        if (mProvider == "cpu")
+        if (!RuntimePlatform.IsDirectML(mProvider))
         {
             // 图优化用 onnxruntime 默认（ORT_ENABLE_ALL）：1.20.1 时代的 BASIC 封顶已随 1.23 升级取消，见 RuntimeHost.LoadSession。
             var cpu = new InferenceSession(modelPath);

@@ -20,6 +20,7 @@
     <Compile Include="..\..\DiffSingerFrames.cs" />
     <Compile Include="..\..\DiffSingerSpeakerMix.cs" />
     <Compile Include="..\..\DiffSingerCurveInput.cs" />
+    <Compile Include="..\..\RuntimePlatform.cs" />
   </ItemGroup>
 
 </Project>

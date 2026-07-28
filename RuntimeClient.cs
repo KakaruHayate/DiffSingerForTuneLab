@@ -27,7 +27,7 @@ internal sealed class RuntimeClient : IDisposable
     public RuntimeClient(string provider, Func<string, IRuntimeTransport> transportFactory, bool canRespawn,
         Action<string>? log = null, IRuntimeTransport? initialTransport = null)
     {
-        mProvider = provider;
+        mProvider = RuntimePlatform.NormalizeProvider(provider);
         mFactory = transportFactory;
         mCanRespawn = canRespawn;
         mLog = log;
@@ -49,7 +49,7 @@ internal sealed class RuntimeClient : IDisposable
             {
                 return LoadInner(path);
             }
-            catch (RuntimeHostException ex) when (mCanRespawn && mProvider != "cpu")
+            catch (RuntimeHostException ex) when (mCanRespawn && RuntimePlatform.IsDirectML(mProvider))
             {
                 // DML 加载失败（host 报错、exe 存活、非崩溃）：不自动切 CPU，抛可读错误让用户手动改执行设备。
                 throw new InvalidOperationException(

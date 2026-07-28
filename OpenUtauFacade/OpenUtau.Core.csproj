@@ -9,6 +9,11 @@
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>disable</ImplicitUsings>
+    <DiffSingerRuntimeIdentifier Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-x64</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">osx-arm64</DiffSingerRuntimeIdentifier>
+    <DiffSingerRuntimeIdentifier Condition="'$(DiffSingerRuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-x64</DiffSingerRuntimeIdentifier>
+    <UseDirectML>$([System.String]::Copy('$(DiffSingerRuntimeIdentifier)').StartsWith('win-'))</UseDirectML>
     <!-- OpenUtau 原码风格（nullable 关闭）；签名保持二进制兼容，勿加注解改动风格。 -->
     <Nullable>disable</Nullable>
     <RootNamespace>OpenUtau</RootNamespace>
@@ -18,8 +23,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- 与插件同版：门面 G2pPack 的神经 G2P 推理用（外部 DLL 对 OnnxRuntime 的引用是 0.0.0.0 任意版）。 -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" />
+    <!-- 与插件同版且同平台包：门面 G2pPack 的神经 G2P 推理用。 -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.DirectML" Version="1.23.0" Condition="'$(UseDirectML)' == 'True'" />
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.23.0" Condition="'$(UseDirectML)' != 'True'" />
   </ItemGroup>
 
 </Project>

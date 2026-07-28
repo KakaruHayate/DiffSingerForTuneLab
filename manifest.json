@@ -9,5 +9,5 @@
   "engine": "DiffSinger",
   "classes": ["DiffSingerForTuneLab.DiffSingerVoiceEngine"],
   "assembly": "DiffSingerForTuneLab.dll",
-  "platforms": ["win"]
+  "platforms": ["win-x64", "osx-arm64", "linux-x64"]
 }

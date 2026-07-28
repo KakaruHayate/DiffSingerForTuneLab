@@ -16,15 +16,11 @@ internal static class DirectMlNative
 {
     public static void Preload(string pluginRootDir)
     {
+        if (!OperatingSystem.IsWindows())
+            return;
         try
         {
-            string rid = RuntimeInformation.ProcessArchitecture switch
-            {
-                Architecture.X86 => "win-x86",
-                Architecture.Arm64 => "win-arm64",
-                _ => "win-x64",
-            };
-            var dml = Path.Combine(pluginRootDir, "runtimes", rid, "native", "DirectML.dll");
+            var dml = Path.Combine(pluginRootDir, "runtimes", RuntimePlatform.RuntimeIdentifier, "native", "DirectML.dll");
             if (File.Exists(dml))
                 NativeLibrary.TryLoad(dml, out _);
         }

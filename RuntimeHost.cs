@@ -18,7 +18,7 @@ internal sealed class RuntimeHost : IDisposable
     readonly Dictionary<int, InferenceSession> mSessions = new();
     int mNextId = 1;
 
-    public RuntimeHost(string provider) => mProvider = provider;
+    public RuntimeHost(string provider) => mProvider = RuntimePlatform.NormalizeProvider(provider);
 
     // 处理一个请求帧、返回一个响应帧。任何异常 → Error 响应（携 message）。
     public byte[] Handle(byte[] request)
@@ -104,7 +104,7 @@ internal sealed class RuntimeHost : IDisposable
         //   原生崩溃（AccessViolation，EXTENDED/ALL 必崩），故当时封顶 BASIC。1.23.0 上四档优化级别实测全绿
         //   （声学/linguistic/dur/pitch/variance/vocoder 全模型 × ORT_ENABLE_ALL），已松回 onnxruntime 默认。
         //   降级 onnxruntime 或换用新模型若再现 Init 期 AccessViolation，先怀疑此处。
-        if (mProvider != "cpu")
+        if (RuntimePlatform.IsDirectML(mProvider))
             options.AppendExecutionProvider_DML(0);
         return new InferenceSession(modelPath, options);
     }
