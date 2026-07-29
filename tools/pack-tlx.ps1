@@ -51,8 +51,8 @@ function Invoke-DotNet {
 
 # Run one pack script per clean checkout/runner. Do not launch multiple RIDs concurrently in the same worktree,
 # because NuGet restore shares project obj files.
-Invoke-DotNet restore (Join-Path $repo "DiffSingerForTuneLab.csproj") -r $RuntimeIdentifier -p:NuGetAudit=false
-Invoke-DotNet restore (Join-Path $repo "MLRuntime/MLRuntime.csproj") -r $RuntimeIdentifier -p:NuGetAudit=false
+Invoke-DotNet restore (Join-Path $repo "DiffSingerForTuneLab.csproj") -r $RuntimeIdentifier "-p:NuGetAudit=false"
+Invoke-DotNet restore (Join-Path $repo "MLRuntime/MLRuntime.csproj") -r $RuntimeIdentifier "-p:NuGetAudit=false"
 Invoke-DotNet publish (Join-Path $repo "DiffSingerForTuneLab.csproj") `
     -c $Configuration -r $RuntimeIdentifier --self-contained false --no-restore -o $pluginPublish
 Invoke-DotNet publish (Join-Path $repo "MLRuntime/MLRuntime.csproj") `
