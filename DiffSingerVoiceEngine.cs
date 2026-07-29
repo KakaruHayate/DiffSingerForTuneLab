@@ -69,8 +69,11 @@ public sealed class DiffSingerVoiceEngine : IVoiceSynthesisEngine, IExtensionSet
     }
 
     public IReadOnlyOrderedMap<PropertyKey, AutomationConfig> GetSynthesizedParameterConfigs(IVoiceSynthesisPartPropertyContext context)
-        => CommonItems(SelectedContexts(context).Select(pc =>
-            (IReadOnlyOrderedMap<PropertyKey, AutomationConfig>)DiffSingerDeclarations.BuildReadbackConfigs(pc.Config)));
+    {
+        var merged = context.Parts.Select(p => p.PartProperties).Merge();
+        return CommonItems(SelectedContexts(context).Select(pc =>
+            (IReadOnlyOrderedMap<PropertyKey, AutomationConfig>)DiffSingerDeclarations.BuildReadbackConfigs(merged, pc.Config)));
+    }
 
     public ObjectConfig GetPartPropertyConfig(IVoiceSynthesisPartPropertyContext context)
     {

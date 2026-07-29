@@ -239,7 +239,8 @@ public static class DiffSingerDeclarations
             properties.Add((KeyMixSlots, L.Tr("Phoneme mix slots")),
                 DraggableNumberBoxConfig.Integer(0).WithRange(0, MaxMixSlots));
 
-        // variance 参数模式（仅声库有 variance 参数时暴露）：delta = 偏移值编辑 / absolute = 绝对值编辑（dB）。
+        // variance 参数模式（仅声库有 variance 参数时暴露）：delta = 偏移值编辑；absolute = 绝对声学值编辑
+        // （energy/breathiness/voicing 为 dB，tension 为模型声学单位）。
         if (pc.Config.UseEnergyEmbed || pc.Config.UseBreathinessEmbed || pc.Config.UseVoicingEmbed || pc.Config.UseTensionEmbed)
         {
             properties.Add((KeyVarianceMode, L.Tr("Variance param mode")), ComboBoxConfig
@@ -453,10 +454,15 @@ public static class DiffSingerDeclarations
     static AutomationConfig Continuous(string color, double baseline, double min, double max, bool randomizable = false)
         => AutomationConfig.Create(min, max).WithDefault(baseline).WithColor(color).WithRandomizable(randomizable);
 
-    // 绝对模式分段轨：NaN 基线（未编辑 = 跟随预测），dB 量程，带 dB 单位格式。
+    // 绝对模式分段轨：NaN 基线（未编辑 = 跟随预测）。energy/breathiness/voicing 以 dB 标注；
+    // tension 是模型声学值（[-10,10]），不是 dB，保持纯数值标签。
     static AutomationConfig AbsoluteCurve(VarianceSpec v)
-        => Piecewise(v.Color, v.AcousticMin, v.AcousticMax)
-            .WithMinLabel($"{v.AcousticMin:0} dB").WithMaxLabel($"{v.AcousticMax:0} dB");
+    {
+        var config = Piecewise(v.Color, v.AcousticMin, v.AcousticMax);
+        return v.Key == "tension"
+            ? config
+            : config.WithMinLabel($"{v.AcousticMin:0} dB").WithMaxLabel($"{v.AcousticMax:0} dB");
+    }
 
     // part 属性 variance_param_mode → 当前模式（缺省 delta）
     public static string VarianceModeOf(PropertyObject partProperties)
