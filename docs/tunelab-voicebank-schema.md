@@ -451,3 +451,32 @@ variance 回显轨（`SynthesizedParameters`）是**实参（预测 + 用户 del
 
 - `language`：**建议**声库制作方用 ISO 639 / BCP-47 码（`zh`/`ja`/`en`）。插件作为桥**无法强制**，只能在 schema 建议 +（可选）加载时对非 ISO 形态打 warning。**不做**别名映射表（那是自造标准）。
 - `model` / `version` / `speaker`：受 ComboBox options 校验，查无回落默认 sentinel（`""`）——这类**受校验离散值天然安全**，不会因复用产生脏值。
+
+### 14.6 variance 参数模式（delta / absolute）
+
+variance 参数（energy / breathiness / voicing / tension）有两种编辑模式，由 part 属性 `variance_param_mode` 控制：
+
+- **`delta`**（默认）：连续轨，归一化偏移量（energy/breathiness/tension `[-1,1]`，voicing `[0,1.25]`）。合成期 `Delta(predicted, userValue)` → 绝对声学值。
+- **`absolute`**：分段轨，使用回显轨相同的真实声学单位与范围（energy/breathiness/voicing 为 `[-96, 0]` dB，tension 为 `[-10, 10]`）。未编辑帧 `NaN` = 跟随模型预测值；已编辑帧存用户画的最终声学目标。
+
+两种模式的数据**互不换算、互不迁移**：
+- 切到 absolute 时，delta 连续轨数据保留在 `Automations` 容器中（孤儿数据，隐藏不删），absolute 分段轨从空开始画。
+- 切回 delta 时，absolute 分段轨数据保留在 `PiecewiseAutomations` 容器中（孤儿数据），delta 连续轨恢复为切换前的原样。
+- 这与 ACE Studio 的「包络/实参」选项卡单向数据流一致：delta → absolute 显示跟随（已有 readback 机制），absolute → delta 不反向传播。
+
+**合成语义**：absolute 轨表示最终声学目标，不经过 delta 逆运算，也不受 delta 编辑量程限制。已编辑帧直接使用用户目标并钳到该参数的声学范围；未编辑的 `NaN` 帧使用模型预测值。对 `voicing_domain: mulaw` 声库，预测值先从线上域解码为 dB，完成上述组合后再编码回模型输入域。因此 `predicted=-40 dB, target=0 dB` 的最终目标就是 `0 dB`，不会被 delta 模式 `1.25` 的编辑上限截断。
+
+**回显轨裁剪**：absolute 模式下用户轨本身就是实参（已含预测 + 编辑），`SynthesizedParameters` 对该参数不再暴露只读回显轨（避免两条轨同值重复）。
+
+### 14.7 TuneLab 2.0 宿主要求
+
+本功能依赖 TuneLab 的 voice synthesis 链能够消费 piecewise automation。`release/2.0.0`（提交 `2c21ab94843a50d8f2dccaa0f403f52f2aef7d47`）已经实现分段轨的编辑、显示、序列化与 `NaN` 段间语义，但其 `tests/PIECEWISE-AUTOMATION-TRACKS-TEST-CASES.md` 明确把“voice 分段轨参与合成”列为后续需求。**未应用下述宿主改动时，absolute 轨可以编辑和保存，但不会被可靠送入实际 voice 合成；因此该模式不能视为对原版 TuneLab 2.0 开箱即用。**
+
+TuneLab 2.0 需要补齐的宿主内部接线如下；不需要修改冻结的 `TuneLab.SDK` / `TuneLab.Foundation` 公共 ABI：
+
+1. `TuneLab/Data/Synthesis/VoiceSynthesisSnapshotFactory.cs`：按 `AutomationConfig.IsPiecewise` 选择 `MidiPart.PiecewiseAutomations` 或 `MidiPart.Automations`；piecewise 不存在时提供 `NaN` evaluator，并参考 `EffectSynthesisSnapshotFactory` 的现有实现，不叠加 continuous automation vibrato。
+2. `TuneLab/Data/Synthesis/VoiceSynthesisContext.cs`：同时 wire `PiecewiseAutomations` 的现有项及 `ItemAdded` / `ItemRemoved`，订阅每条分段轨的 `RangeModified`，使绘制后能标记对应合成区间失效。
+3. `TuneLab/Data/MidiPart.cs`（或等价的 host-internal evaluator 路径）：live synthesis evaluator 必须按当前声明的 `IsPiecewise` 从正确容器求值；分段轨未覆盖区域保持 `NaN`，不能回退读取同 key 的旧连续 delta 轨。
+4. 模式切换后，同 key 从 continuous 变为 piecewise（或反向）时，voice context 必须刷新对应 evaluator/订阅对象，避免继续持有旧容器。
+
+上述要求来自 TuneLab `release/2.0.0` 的 `docs/voice-sdk-design.md`（`DefaultValue=NaN` 表示 piecewise、段间求值为 `NaN`、`RangeModified` 为增量失效契约）以及官方 piecewise 测试用例文档。

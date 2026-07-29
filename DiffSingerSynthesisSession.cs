@@ -22,15 +22,10 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
     readonly IVoiceSynthesisContext mContext;
     readonly string mVoiceId;
     readonly Func<ResolveProps, PartContext?> mResolve;   // (model/version 选择) → 解析到具体物理包能力集；运行时支持换 model/version
-    readonly VoicebankConfig? mConfig;   // 构造期解析包（驱动固定轨订阅/回显轨集合）；运行时 Render 按 part 属性另行解析
     readonly DiffSingerModelCache mModelCache;
     readonly int mSamplingSteps;
     readonly bool mTensorCache;        // 张量缓存总开关（引擎设置 tensor_cache）
     readonly int mCacheMaxSizeMb;      // 缓存体积上限（MB）；0 = 不限制（引擎设置 cache_max_size_mb）
-
-    // 运行时复用的声明派生物（每会话固定，构造期据声库能力集算一次）：
-    //   可编辑轨集合（构造期订阅其区间编辑）+ 回显轨集合（产物 SynthesizedParameters 按其 key 聚合）。
-    readonly OrderedMap<PropertyKey, AutomationConfig> mReadbackConfigs;
 
     // —— 调度状态（数据线程；按 note 间隙分块，账本式托管失效与产物）——
     readonly IActionEvent<IVoiceSynthesisNote> mNoteFieldModified;   // 「任一 note 任一字段变」聚合事件（宿主 WhenAnyItem，成员增删自动接线/退订）
@@ -51,11 +46,6 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         mSamplingSteps = samplingSteps;
         mTensorCache = tensorCache;
         mCacheMaxSizeMb = cacheMaxSizeMb;
-
-        // 构造期解析一次（驱动固定轨订阅与回显轨集合）；运行时 Render 按 part 属性另行解析、支持 model/version 切换。
-        var pc = resolve(PropsOf(context.PartProperties));
-        mConfig = pc?.Config;
-        mReadbackConfigs = pc != null ? BuildReadbackConfigs(pc.Config) : new OrderedMap<PropertyKey, AutomationConfig>();
 
         // 变更接线（handler 只做廉价标脏；重活延迟到 Committed 重分块）——见 §5.9。
         //   note 字段变更：宿主 WhenAnyItem 把「每个现有/未来成员的这几个属性事件」聚合成一个带成员标识的事件，
@@ -206,6 +196,7 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
             return null;
         var config = pc.Config;
         var resolved = pc.Resolved;
+        bool absoluteVarianceMode = VarianceModeOf(snapshot.PartProperties) == VarianceModeAbsolute;
 
         // 声学-声码器参数一致性校验（对齐 OpenUtau DiffSingerRenderer.InvokeDiffsinger 入口校验）。
         //   仅在声码器存在时校验（无声码器会在后续加载时报错，此处不重复）。
@@ -436,9 +427,11 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         AddF("blend", blendFlat, new[] { mixRows, nFrames });
         AddF("f0", acousticF0, new[] { 1, nFrames });   // 声学吃移调 f0（无音区偏移时即原始 f0 同引用）
 
-        // —— variance：预测 + 用户 delta 合成喂声学，同一份实参产回显 ——
-        //   用户曲线按帧求值（连续轨：未编辑处=中性基线 → Delta 恒得纯预测；编辑处 → 叠加），clamp 到声学值域。
-        //   回显（Use && Predict）= 实参（预测 + 用户 delta、clamp 后）——与 pitch 回显同语义：所见即喂给声学的值。
+        // —— variance：预测 + 用户曲线合成喂声学 ——
+        //   delta 模式（默认）：用户曲线为归一化偏移量，CombineVariance 用 Delta(x, y) 合成；
+        //   absolute 模式：用户曲线为声学绝对值（分段轨，NaN=未编辑）；已编辑帧直接采用用户目标，
+        //   不受 delta 编辑量程限制。
+        //   回显轨仅在 delta 模式暴露（absolute 模式下用户轨即实参，回显冗余）。
         //   mulaw 声库（voicing_domain）三明治：预测解码成 dB 进公式、出公式编码回线上域喂声学；
         //   公式/回显/clamp 恒 dB 语义（见 VoicingDomainCodec 与 schema §14.2）。db 声库 codec=null、路径不变。
         var voicingCodec = VoicingDomainCodec.For(config.VoicingDomain, config.VoicingMu);
@@ -450,14 +443,19 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
                 ? auto.Evaluator.Evaluate(frameTimes)
                 : null;
             var codec = spec.Key == "voicing" ? voicingCodec : null;
-            var combined = CombineVariance(spec, predicted, user, nFrames, codec);
+
+            bool absolute = absoluteVarianceMode && spec.Use(config);
+            var combined = absolute
+                ? CombineVarianceAbsolute(spec.Math, predicted, user, nFrames, codec)
+                : CombineVariance(spec.Math, predicted, user, nFrames, codec);
 
             if (ac.HasInput(spec.Key))
                 AddF(spec.Key, codec == null ? combined : Array.ConvertAll(combined, codec.DbToWire),
                     new[] { 1, nFrames });
 
-            if (spec.Use(config) && spec.Predict(config) && predicted != null)
-                varReadback[spec.Key] = BuildReadbackSegment(spec, combined, frameTimes, nFrames);
+            // 回显轨仅在 delta 模式 + 有预测时产生（absolute 模式下用户分段轨即实参、已自绘）
+            if (!absolute && spec.Use(config) && spec.Predict(config) && predicted != null)
+                varReadback[spec.Key] = BuildReadbackSegment(spec.Math, combined, frameTimes, nFrames);
         }
 
         // —— gender / velocity：纯用户曲线（无方差器基线），钳到声明量程后按帧 convert 喂声学
@@ -674,6 +672,23 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         return result;
     }
 
+    // 绝对值模式：用户轨存声学绝对值（分段形，NaN = 未编辑 = 跟随预测）。
+    //   已编辑帧直接采用用户目标，不经过 delta 量程；否则 voicing 等参数会出现不可达目标。
+    //   codec 非空（mulaw voicing）时先把预测从线上域解码为 dB；返回值恒为 dB，调用方再编码回线上域。
+    static float[] CombineVarianceAbsolute(VarianceSpec spec, float[]? predicted, double[]? user, int n,
+        VoicingDomainCodec? codec = null)
+    {
+        var result = new float[n];
+        for (int f = 0; f < n; f++)
+        {
+            float x = predicted == null ? 0f : (f < predicted.Length ? predicted[f] : predicted[^1]);
+            if (codec != null) x = codec.WireToDb(x);
+            double target = user != null && f < user.Length ? user[f] : double.NaN;
+            result[f] = VarianceMath.CombineAbsoluteFrame(spec, x, target);
+        }
+        return result;
+    }
+
     // 纯用户曲线 → 帧级声学输入：按帧求值用户轨，钳到声明量程 [min,max] 后逐帧 convert
     //   （无轨 / NaN 自由区 → 中性基线）。钳位理由与逐帧实现见 DiffSingerCurveInput。
     static float[] BuildCurveInput(VoiceSynthesisSnapshot snapshot, string key, double neutral,
@@ -694,6 +709,10 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
 
     static string LiveString(IReadOnlyNotifiablePropertyObject p, string key)
         => p.GetValue(key, PropertyValue.Create(string.Empty)).ToString(out var s) ? s : string.Empty;
+
+    // 实时只读外观下的 variance 模式判定（快照侧用 Declarations.VarianceModeOf；此处键缺省 ⇒ "" ⇒ delta）。
+    static bool AbsoluteModeOf(IReadOnlyNotifiablePropertyObject p)
+        => LiveString(p, KeyVarianceMode) == VarianceModeAbsolute;
 
     static string? NullIfEmpty(string s) => string.IsNullOrEmpty(s) ? null : s;
 
@@ -738,7 +757,10 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
         get
         {
             var map = new Map<string, SynthesizedParameter>();
-            foreach (var kvp in mReadbackConfigs)
+            if (mResolve(PropsOf(mContext.PartProperties)) is not { } pc)
+                return map;
+            bool absoluteMode = AbsoluteModeOf(mContext.PartProperties);
+            foreach (var kvp in BuildReadbackConfigs(pc.Config, absoluteMode))
             {
                 var segments = new List<IReadOnlyList<Point>>();
                 foreach (var piece in mPieces)
@@ -915,7 +937,8 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
 
         // 当前应订的轨集 = 固定轨(已 gating) ∪ 全量候选混音轨；混音候选里未选中的不会 live，下方按 live 过滤。
         var desired = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var key in BuildFixedAutomationConfigs(pc.Config, RetakeOf(pc.Resolved)).Keys)
+        bool absoluteMode = AbsoluteModeOf(mContext.PartProperties);
+        foreach (var key in BuildFixedAutomationConfigs(pc.Config, RetakeOf(pc.Resolved), absoluteMode).Keys)
             desired.Add(key.Id);
         foreach (var (key, _) in MixTrackKeys(pc.Resolved))
             desired.Add(key);
@@ -930,13 +953,22 @@ public sealed class DiffSingerSynthesisSession : IVoiceSynthesisSession
                 automation.RangeModified.Subscribe(OnRangeModified);
                 mSubscriptions[key] = automation;
             }
-        // 退订：已订阅但不再应有（gating 掉）、或宿主已撤下该轨(混音被取消选择)的。
+        // 退订 / 刷新：已订阅但不再应有（gating 掉）、或宿主已撤下该轨、或同一 key 的 automation 对象已更换
+        //   （如 continuous→piecewise 切换时数据容器变更，对象引用不同但仍需 RangeModified 通知）。
         foreach (var key in mSubscriptions.Keys.ToList())
-            if (!desired.Contains(key) || !mContext.Automations.ContainsKey(key))
+        {
+            if (!desired.Contains(key) || !mContext.Automations.TryGetValue(key, out var currentAuto))
             {
                 mSubscriptions[key].RangeModified.Unsubscribe(OnRangeModified);
                 mSubscriptions.Remove(key);
             }
+            else if (!ReferenceEquals(mSubscriptions[key], currentAuto))
+            {
+                mSubscriptions[key].RangeModified.Unsubscribe(OnRangeModified);
+                currentAuto.RangeModified.Subscribe(OnRangeModified);
+                mSubscriptions[key] = currentAuto;
+            }
+        }
     }
 
     void OnCommitted()
