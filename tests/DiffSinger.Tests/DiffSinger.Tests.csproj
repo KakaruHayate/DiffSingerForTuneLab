@@ -20,6 +20,8 @@
   <ItemGroup>
     <Compile Include="..\..\DiffSingerFrames.cs" />
     <Compile Include="..\..\DirectMlNative.cs" />
+    <Compile Include="..\..\DiffSingerSpeakerMix.cs" />
+    <Compile Include="..\..\DiffSingerCurveInput.cs" />
   </ItemGroup>
 
 </Project>

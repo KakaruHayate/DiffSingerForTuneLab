@@ -32,8 +32,12 @@ public class PackageVersionTests
         return dir.FullName;
     }
 
-    static XElement LoadProject(string csprojRelativePath) =>
-        XDocument.Load(Path.Combine(RepoRoot, csprojRelativePath)).Root!;
+    static XElement LoadProject(string csprojRelativePath)
+    {
+        Assert.True(File.Exists(Path.Combine(RepoRoot, csprojRelativePath)),
+            $"未找到项目文件：{csprojRelativePath}");
+        return XDocument.Load(Path.Combine(RepoRoot, csprojRelativePath)).Root!;
+    }
 
     static string? GetPackageVersion(string csprojRelativePath, string packageId)
     {
@@ -52,16 +56,6 @@ public class PackageVersionTests
         yield return new object[] { Path.Combine("MLRuntime", "MLRuntime.csproj") };
         yield return new object[] { Path.Combine("OpenUtauFacade", "OpenUtau.Core.csproj") };
         yield return new object[] { Path.Combine("tools", "DiffSingerSmokeTest", "DiffSingerSmokeTest.csproj") };
-    }
-
-    [Theory]
-    [MemberData(nameof(OnnxRuntimeDirectMLProjectPaths))]
-    public void Project_FileExists(string csprojRelativePath)
-    {
-        // 前置断言：若路径本身失效，其余测试的 XDocument.Load 会抛 FileNotFoundException，
-        // 单独断言可给出更明确的失败原因。
-        Assert.True(File.Exists(Path.Combine(RepoRoot, csprojRelativePath)),
-            $"未找到项目文件：{csprojRelativePath}");
     }
 
     [Theory]
